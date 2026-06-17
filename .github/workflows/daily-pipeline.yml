@@ -1,0 +1,70 @@
+name: vidrot.ai Daily Pipeline
+
+on:
+  schedule:
+    # Runs at 9:00 AM EST (13:00 UTC) Monday-Saturday
+    - cron: "0 13 * * 1-6"
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches: [main]
+    paths:
+      - "config/**"
+      - "prompt_generator.py"
+      - "trending.py"
+      - "pipeline.py"
+
+jobs:
+  generate-prompts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Pipeline
+        run: python pipeline.py --cron --count 5
+
+      - name: Commit generated prompts
+        if: github.event_name != 'pull_request'
+        run: |
+          git config user.name "vidrot-bot"
+          git config user.email "bot@vidrot.ai"
+          git add prompts/ output/ config/trending_cache.json
+          git diff --staged --quiet || git commit -m "📺 Daily prompt batch $(date +%Y-%m-%d)"
+          git push
+
+  post-instagram:
+    needs: generate-prompts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only run if we have credentials and there are clips to post
+    if: false  # Disabled by default — requires IG_PASSWORD GitHub Secret
+    # To enable: change to 'true' and add IG_USERNAME + IG_PASSWORD to GitHub Secrets
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install instagrapi
+
+      - name: Post to Instagram
+        env:
+          IG_USERNAME: ${{ secrets.IG_USERNAME }}
+          IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+        run: |
+          LATEST_CAPTIONS=$(ls output/captions_*.json 2>/dev/null | sort -r | head -1)
+          if [ -n "$LATEST_CAPTIONS" ]; then
+            python post_instagram.py --batch output/ --caption-file "$LATEST_CAPTIONS"
+          else
+            echo "No caption files found — skipping"
+          fi
