@@ -23,6 +23,20 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   ip TEXT NOT NULL,
   ok INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS passkeys (
+  credential_id BLOB PRIMARY KEY,
+  public_key BLOB NOT NULL,
+  sign_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  backed_up INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS webauthn_challenges (
+  challenge TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  rp_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
 """
 
 _locks = {}
@@ -193,6 +207,127 @@ def record_attempt(folder, ip, ok):
             conn.execute("DELETE FROM login_attempts WHERE at < ?", (cutoff,))
         finally:
             conn.close()
+
+
+def save_passkey(folder, credential_id, public_key, sign_count, backed_up):
+    now = _now()
+    with _lock(folder):
+        conn = connect(folder)
+        try:
+            conn.execute(
+                "INSERT INTO passkeys(credential_id, public_key, sign_count, created_at, backed_up) VALUES(?, ?, ?, ?, ?)",
+                (credential_id, public_key, int(sign_count), now.isoformat(), 1 if backed_up else 0),
+            )
+        finally:
+            conn.close()
+
+
+def get_passkey(folder, credential_id):
+    with _lock(folder):
+        conn = connect(folder)
+        try:
+            row = conn.execute(
+                "SELECT credential_id, public_key, sign_count, created_at, backed_up FROM passkeys WHERE credential_id=?",
+                (credential_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    if row is None:
+        return None
+    return {
+        "credential_id": bytes(row["credential_id"]),
+        "public_key": bytes(row["public_key"]),
+        "sign_count": int(row["sign_count"]),
+        "created_at": row["created_at"],
+        "backed_up": bool(row["backed_up"]),
+    }
+
+
+def list_passkeys(folder):
+    with _lock(folder):
+        conn = connect(folder)
+        try:
+            rows = conn.execute(
+                "SELECT credential_id, created_at, backed_up FROM passkeys ORDER BY created_at"
+            ).fetchall()
+        finally:
+            conn.close()
+    return [
+        {
+            "credential_id": bytes(row["credential_id"]),
+            "created_at": row["created_at"],
+            "backed_up": bool(row["backed_up"]),
+        }
+        for row in rows
+    ]
+
+
+def update_passkey_count(folder, credential_id, sign_count):
+    with _lock(folder):
+        conn = connect(folder)
+        try:
+            conn.execute(
+                "UPDATE passkeys SET sign_count=? WHERE credential_id=?",
+                (int(sign_count), credential_id),
+            )
+        finally:
+            conn.close()
+
+
+def delete_passkey(folder, credential_id):
+    with _lock(folder):
+        conn = connect(folder)
+        try:
+            cur = conn.execute("DELETE FROM passkeys WHERE credential_id=?", (credential_id,))
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+
+def save_challenge(folder, challenge, kind, origin, rp_id, minutes=5):
+    now = _now()
+    expires = now + timedelta(minutes=minutes)
+    with _lock(folder):
+        conn = connect(folder)
+        try:
+            conn.execute("DELETE FROM webauthn_challenges WHERE expires_at < ?", (now.isoformat(),))
+            conn.execute(
+                "INSERT INTO webauthn_challenges(challenge, kind, origin, rp_id, expires_at) VALUES(?, ?, ?, ?, ?)",
+                (challenge, kind, origin, rp_id, expires.isoformat()),
+            )
+        finally:
+            conn.close()
+
+
+def take_challenge(folder, challenge, kind):
+    now = _now()
+    with _lock(folder):
+        conn = connect(folder)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT challenge, kind, origin, rp_id, expires_at FROM webauthn_challenges WHERE challenge=? AND kind=?",
+                (challenge, kind),
+            ).fetchone()
+            if row is not None:
+                conn.execute(
+                    "DELETE FROM webauthn_challenges WHERE challenge=? AND kind=?",
+                    (challenge, kind),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+    if row is None:
+        return None
+    expires = datetime.fromisoformat(row["expires_at"])
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= now:
+        return None
+    return {"challenge": row["challenge"], "origin": row["origin"], "rp_id": row["rp_id"]}
 
 
 def recent_failures(folder, ip, minutes=15):

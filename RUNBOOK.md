@@ -58,7 +58,7 @@ The live app is already on the owner's AWS EC2 box, not on Fly. Open it at `http
 | Data directory | `/home/ubuntu/vidrot-data` |
 | Listen address | `127.0.0.1:8765` |
 
-The env file should set `VIDROT_HOST=127.0.0.1`, `VIDROT_PORT=8765`, `VIDROT_DATA=/home/ubuntu/vidrot-data`, `VIDROT_COOKIE_PATH=/vidrot`, plus `VIDROT_PASSWORD` and `VIDROT_SECRET_KEY`. The bind is loopback, so the process will start without a password and nginx would then expose an open console. `VIDROT_SECURE=1` and `VIDROT_TRUST_PROXY=1` keep the session cookie Secure and the lockout on the visitor IP. `VIDROT_COOKIE_PATH=/vidrot` stops that cookie from being sent to the rest of racksrewards.com.
+The env file should set `VIDROT_HOST=127.0.0.1`, `VIDROT_PORT=8765`, `VIDROT_DATA=/home/ubuntu/vidrot-data`, `VIDROT_COOKIE_PATH=/vidrot`, `VIDROT_RP_ID=racksrewards.com`, `VIDROT_ORIGIN=https://racksrewards.com`, plus `VIDROT_PASSWORD` and `VIDROT_SECRET_KEY`. The bind is loopback, so the process will start without a password and nginx would then expose an open console. `VIDROT_SECURE=1` and `VIDROT_TRUST_PROXY=1` keep the session cookie Secure and the lockout on the visitor IP. `VIDROT_COOKIE_PATH=/vidrot` stops that cookie from being sent to the rest of racksrewards.com. The passkey is tied to `racksrewards.com`, not to the `/vidrot/` path.
 
 Front-end URLs are relative to the page. At `https://racksrewards.com/vidrot/` they stay under `/vidrot/`. At `http://127.0.0.1:8765/` they stay at the root. Opening `https://racksrewards.com/vidrot` with no slash makes the browser request `/static/...` on the bare domain, which nginx does not send to this app.
 
@@ -84,6 +84,8 @@ Set these as Fly secrets. None of them belong in git.
 | `IG_PROXY` | No | `http://user:pass@host:port` for a proxy you control. See the Instagram note below. |
 | `VIDROT_TZ` | No | Clock for 09:00 and 12:00. Default in the app is `America/New_York`. |
 | `VIDROT_COOKIE_PATH` | On a subpath | Cookie `Path`. Default `/`. On the EC2 host set `/vidrot`. |
+| `VIDROT_RP_ID` | For a passkey | Domain the passkey belongs to. On the EC2 host, `racksrewards.com`. |
+| `VIDROT_ORIGIN` | For a passkey | `https://racksrewards.com`. No path. |
 | `VIDROT_VAPID_PUBLIC` / `VIDROT_VAPID_PRIVATE` | No | Closed-app alerts. Without them, the status bar in the app is the alert. |
 | `VIDROT_VAPID_SUBJECT` | With the VAPID keys | `mailto:richybeats1@gmail.com` is a fine subject. |
 
@@ -91,10 +93,23 @@ Generate VAPID keys with `vapid --gen` after `pip install pywebpush`, then `fly 
 
 The app also reads `PORT` (Fly sets it) and stores data in `VIDROT_DATA` (`/data` in the image).
 
+## Passkey
+
+Sign-in is an Apple passkey. Face ID or Touch ID confirms it. The password is only the recovery key, and the way you save the first passkey.
+
+1. Open `https://racksrewards.com/vidrot/` in Safari on the iPhone. The trailing slash matters.
+2. Sign in with `VIDROT_PASSWORD`.
+3. Tap **Save passkey** and confirm with Face ID or Touch ID. iCloud Keychain can sync that passkey to your other Apple devices.
+4. Next time, the page leads with **Sign in with passkey**.
+
+The password still works if the phone is gone. Removing the passkey is under More → Settings.
+
+`VIDROT_RP_ID` and `VIDROT_ORIGIN` must match the HTTPS site. A passkey saved for a different host will not appear.
+
 ## First login
 
-1. Open `https://<your-app>.fly.dev` on the phone.
-2. Type `VIDROT_PASSWORD`.
+1. Open the site on the phone (`https://racksrewards.com/vidrot/` on the EC2 host, or `https://<your-app>.fly.dev` on Fly).
+2. Type `VIDROT_PASSWORD`, then save a passkey.
 3. Leave **Dry run** on.
 4. Today → New batch. That pulls trends and writes prompts. Render clips makes title cards, not Veo videos. Stitch, then Post. History should say the post was saved and nothing was uploaded.
 
@@ -107,7 +122,7 @@ The app is a PWA (manifest, icons, service worker).
 - **iPhone:** Safari → Share → Add to Home Screen. Use Safari. Chrome on iOS will not install it.
 - **Android:** Chrome → menu → Install app, or Add to Home screen.
 
-Open it from the icon after that. It is a standalone window, still the same login.
+Open it from the icon after that. It is a standalone window, and sign-in is still the passkey.
 
 ## Veo key and Instagram session
 
