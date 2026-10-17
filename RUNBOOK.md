@@ -91,6 +91,19 @@ Generate VAPID keys with `vapid --gen` after `pip install pywebpush`, then `fly 
 
 The app also reads `PORT` (Fly sets it) and stores data in `VIDROT_DATA` (`/data` in the image).
 
+## Connect Instagram
+
+Open the app, then the Instagram tab.
+
+1. Type the Instagram username and password and tap **Connect**. The server logs in with instagrapi. The password is not written to git. A successful login stores an encrypted session.
+2. If Instagram asks for a 6-digit code, type it on that same screen and tap **Submit code**.
+3. If Instagram asks you to approve the login in the Instagram app, approve it there, then tap **I approved it**. A texted or emailed code can be submitted on that screen too.
+4. The tab then shows the connected account and **Disconnect**.
+
+Importing `session.json` is under that page as an advanced option. The old PC file is `C:\Users\dejes\.openclaw\instagram_sessions\session.json`.
+
+Instagram often blocks a datacenter IP. If the connect step turns into a checkpoint or a refusal, put a proxy you control in the proxy field on that page and try again.
+
 ## First login
 
 1. Open `https://<your-app>.fly.dev` on the phone.

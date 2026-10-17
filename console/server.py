@@ -24,7 +24,15 @@ from vidrot.crypto import require_env_key
 from vidrot.db import get_json, put_json
 from vidrot.engine import Engine
 from vidrot.health import collect as collect_health
-from vidrot.instagram import import_session, login as ig_login
+from vidrot.instagram import (
+    approve_challenge,
+    connect_account,
+    connection,
+    disconnect_account,
+    import_session,
+    login as ig_login,
+    submit_code,
+)
 from vidrot.push import add_subscription, configured as push_configured, public_key
 from vidrot.scheduler import Scheduler
 from vidrot.settings import load as load_settings
@@ -146,6 +154,7 @@ def make_handler(engine, scheduler, auth):
                 "/api/settings": self._settings_get,
                 "/api/history": self._history,
                 "/api/logs": self._logs,
+                "/api/instagram/connection": self._ig_connection,
             }
             if path not in routes:
                 self._json(404, {"ok": False, "error": "Not found"})
@@ -225,6 +234,22 @@ def make_handler(engine, scheduler, auth):
                     result = {"ok": False, "detail": str(exc)[:300]}
                 self._json(200, result)
                 return
+            if path == "/api/instagram/connect":
+                self._ig_connect(body)
+                return
+            if path == "/api/instagram/connect/code":
+                result = submit_code(load_settings(engine.folder), engine.folder, body.get("code") or "")
+                self._ig_finish(result)
+                return
+            if path == "/api/instagram/connect/approve":
+                result = approve_challenge(load_settings(engine.folder), engine.folder)
+                self._ig_finish(result)
+                return
+            if path == "/api/instagram/disconnect":
+                result = disconnect_account(engine.folder)
+                engine.log("Disconnected Instagram.")
+                self._json(200, result)
+                return
             if path == "/api/instagram/test":
                 result = ig_login(load_settings(engine.folder), engine.folder, body.get("verification_code") or "")
                 result.pop("client", None)
@@ -275,7 +300,49 @@ def make_handler(engine, scheduler, auth):
                 "dry_run": bool(cfg["dry_run"]),
                 "scheduler": scheduler.summary(),
                 "notice": notice,
+                "instagram": connection(cfg, engine.folder),
             })
+
+        def _ig_connection(self):
+            cfg = load_settings(engine.folder)
+            self._json(200, {"ok": True, "instagram": connection(cfg, engine.folder)})
+
+        def _ig_connect(self, body):
+            updates = {}
+            username = (body.get("username") or "").strip()
+            password = body.get("password") or ""
+            if username:
+                updates["ig_username"] = username
+            if password:
+                updates["ig_password"] = password
+            if "proxy" in body:
+                updates["ig_proxy"] = body.get("proxy") or ""
+            if updates:
+                view, error = save_settings(updates, engine.folder)
+                if error:
+                    self._json(400, {"ok": False, "error": error, "state": "error"})
+                    return
+            else:
+                view = None
+            result = connect_account(load_settings(engine.folder), engine.folder)
+            if view and result.get("ok"):
+                result["settings"] = view
+            elif updates and not result.get("settings"):
+                cfg = load_settings(engine.folder)
+                result["settings"] = public_view(cfg, engine.folder)
+            self._ig_finish(result)
+
+        def _ig_finish(self, result):
+            result = dict(result)
+            result.pop("client", None)
+            if result.get("state") == "connected":
+                engine.log(result.get("message") or "Connected Instagram.")
+                remember_ig(engine.folder, {"ok": True})
+            elif result.get("error"):
+                engine.log(result["error"])
+                remember_ig(engine.folder, result)
+            code = 200 if result.get("ok") or result.get("state") in {"needs_code", "needs_approval"} else 400
+            self._json(code, result)
 
         def _health(self):
             self._json(200, {

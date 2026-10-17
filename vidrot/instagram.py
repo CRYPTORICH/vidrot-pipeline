@@ -211,6 +211,195 @@ def login(settings, folder, verification_code="", client_factory=None):
     return {"ok": True, "client": client, "error": "", "needs_code": False, "challenge": False}
 
 
+def connection(settings, folder):
+    """What the phone should show. Does not call Instagram."""
+    pending = _pending(folder)
+    saved = session_saved(folder)
+    if saved:
+        state = "connected"
+    elif pending.get("step") in {"needs_code", "needs_approval"}:
+        state = pending["step"]
+    else:
+        state = "disconnected"
+    username = (settings.get("ig_username") or "").strip()
+    return {
+        "state": state,
+        "username": username,
+        "session_saved": saved,
+        "message": "" if saved else (pending.get("message") or ""),
+        "proxy_set": bool((settings.get("ig_proxy") or "").strip()),
+        "needs_code": state == "needs_code",
+        "challenge": state == "needs_approval",
+    }
+
+
+def connect_account(settings, folder, client_factory=None):
+    """Start a login with the username and password stored in settings."""
+    username = (settings.get("ig_username") or "").strip()
+    password = settings.get("ig_password") or ""
+    if not username or not password:
+        return {
+            "ok": False,
+            "state": "disconnected",
+            "needs_code": False,
+            "challenge": False,
+            "error": "Enter the Instagram username and password.",
+        }
+    client, error = _open_client(settings, folder, client_factory, restore=False)
+    if error:
+        return error
+    try:
+        client.login(username, password, verification_code="")
+    except Exception as exc:
+        return _hold(folder, client, exc)
+    return _connected(folder, client, username)
+
+
+def submit_code(settings, folder, code, client_factory=None):
+    """Send a 2FA or checkpoint code on the same saved device."""
+    code = (code or "").strip()
+    pending = _pending(folder)
+    if pending.get("step") not in {"needs_code", "needs_approval"}:
+        return {
+            "ok": False,
+            "state": connection(settings, folder)["state"],
+            "needs_code": False,
+            "challenge": False,
+            "error": "Instagram is not waiting for a code. Tap Connect again.",
+        }
+    if not code:
+        return {
+            "ok": False,
+            "state": pending["step"],
+            "needs_code": pending["step"] == "needs_code",
+            "challenge": pending["step"] == "needs_approval",
+            "error": "Enter the code from Instagram.",
+        }
+    client, error = _open_client(settings, folder, client_factory, restore=True)
+    if error:
+        return error
+    username = (settings.get("ig_username") or "").strip()
+    password = settings.get("ig_password") or ""
+    try:
+        client.login(username, password, verification_code=code)
+    except Exception as exc:
+        return _hold(folder, client, exc)
+    return _connected(folder, client, username)
+
+
+def approve_challenge(settings, folder, client_factory=None):
+    """Retry after the owner approves the prompt in the Instagram app."""
+    pending = _pending(folder)
+    if pending.get("step") != "needs_approval":
+        return {
+            "ok": False,
+            "state": connection(settings, folder)["state"],
+            "needs_code": False,
+            "challenge": False,
+            "error": "Instagram is not waiting for an approval. Tap Connect again.",
+        }
+    client, error = _open_client(settings, folder, client_factory, restore=True)
+    if error:
+        return error
+    username = (settings.get("ig_username") or "").strip()
+    password = settings.get("ig_password") or ""
+    try:
+        client.login(username, password, verification_code="")
+    except Exception as exc:
+        return _hold(folder, client, exc)
+    return _connected(folder, client, username)
+
+
+def disconnect_account(folder):
+    put_kv(folder, "ig_session", "")
+    _clear_pending(folder)
+    return {"ok": True, "state": "disconnected", "session_saved": False, "error": ""}
+
+
+def _pending(folder):
+    raw = get_kv(folder, "ig_connect", "")
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _set_pending(folder, payload):
+    put_kv(folder, "ig_connect", json.dumps(payload or {}))
+
+
+def _clear_pending(folder):
+    put_kv(folder, "ig_connect", "")
+    put_kv(folder, "ig_pending_session", "")
+
+
+def _stash_client(folder, client):
+    try:
+        payload = client.get_settings()
+    except Exception:
+        return
+    if isinstance(payload, dict) and payload:
+        put_kv(folder, "ig_pending_session", encrypt(folder, json.dumps(payload)))
+
+
+def _open_client(settings, folder, client_factory, restore):
+    factory = client_factory or _client
+    client = factory()
+    if client is None:
+        return None, {
+            "ok": False,
+            "state": "error",
+            "needs_code": False,
+            "challenge": False,
+            "error": "instagrapi is not installed in this server image.",
+        }
+    proxy_error = _apply_proxy(client, settings)
+    if proxy_error:
+        return None, {"ok": False, "state": "error", "needs_code": False, "challenge": False, "error": proxy_error}
+    if restore:
+        raw = get_kv(folder, "ig_pending_session", "")
+        if raw:
+            try:
+                client.set_settings(json.loads(decrypt(folder, raw)))
+            except Exception:
+                pass
+    return client, None
+
+
+def _hold(folder, client, exc):
+    kind = classify(exc)
+    _stash_client(folder, client)
+    if kind.get("challenge"):
+        step = "needs_approval"
+    elif kind.get("needs_code"):
+        step = "needs_code"
+    else:
+        _clear_pending(folder)
+        kind["state"] = "error"
+        return kind
+    _set_pending(folder, {"step": step, "message": kind.get("error") or ""})
+    kind["state"] = step
+    kind["message"] = kind.get("error") or ""
+    return kind
+
+
+def _connected(folder, client, username):
+    _remember_client(folder, client)
+    _clear_pending(folder)
+    return {
+        "ok": True,
+        "state": "connected",
+        "username": username,
+        "needs_code": False,
+        "challenge": False,
+        "error": "",
+        "message": f"Connected as {username}.",
+    }
+
+
 def permalink(media):
     if media is None:
         return ""

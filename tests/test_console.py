@@ -531,7 +531,7 @@ class BasePathTests(unittest.TestCase):
         self.assertNotIn('"/api', app)
         self.assertNotIn("'/api", app)
         self.assertNotIn("/media/", app)
-        self.assertIn('const CACHE = "vidrot-shell-5"', sw)
+        self.assertIn('const CACHE = "vidrot-shell-6"', sw)
         self.assertIn("self.registration.scope", sw)
         self.assertIn('"static/app.js"', sw)
         self.assertNotIn('"/static/', sw)

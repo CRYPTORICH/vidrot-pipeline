@@ -7,20 +7,21 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="vidrot">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="robots" content="noindex, nofollow">
   <title>vidrot</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="apple-touch-startup-image" href="icons/icon-512.png">
   <link rel="stylesheet" href="static/app.css">
 </head>
 <body>
   <section id="login" class="login">
     <form id="login-form">
       <p class="mark">vidrot<span>.ai</span></p>
-      <p class="tag">private console</p>
-      <h1>Sign in</h1>
-      <p class="muted">This is the owner login. The password is the one set on the server.</p>
+      <p class="login-title">Sign in</p>
+      <p class="muted">Owner password for this phone.</p>
       <label class="field"><span>Password</span>
         <input id="login-password" type="password" autocomplete="current-password" enterkeyhint="go" required>
       </label>
@@ -30,39 +31,39 @@
   </section>
 
   <div id="shell" class="app" hidden>
-    <header>
-      <div class="brand">
-        <p class="mark">vidrot<span>.ai</span></p>
-        <button class="btn ghost" id="more-btn" type="button">More</button>
-      </div>
-      <div class="head-row">
-        <div>
-          <h1 id="title">Today</h1>
-          <p id="subtitle"></p>
-        </div>
-        <label class="dry" title="Dry run writes previews and does not call Veo or Instagram">
-          <input type="checkbox" id="dry-run">
-          <span>Dry run</span>
-        </label>
-      </div>
-      <div id="job-status" class="job">Starting</div>
+    <header class="top">
+      <p class="mark">vidrot<span>.ai</span></p>
+      <h1 id="title">Today</h1>
+      <button class="btn ghost" id="more-btn" type="button" aria-expanded="false" aria-controls="sheet">More</button>
     </header>
-    <div id="notice" class="banner" hidden></div>
-    <div id="banner" class="banner" hidden></div>
-    <main id="view"></main>
+    <main id="main">
+      <div id="toast" class="toast" hidden role="status"></div>
+      <div id="progress" class="progress" hidden>
+        <p id="progress-text"></p>
+        <div class="bar" id="progress-bar" hidden><div id="progress-fill"></div></div>
+      </div>
+      <div id="view"></div>
+    </main>
     <nav id="nav" class="tabbar">
       <a href="#today" data-view="today">Today</a>
       <a href="#clips" data-view="clips">Clips</a>
       <a href="#post" data-view="post">Post</a>
-      <a href="#schedule" data-view="schedule">Schedule</a>
-      <a href="#health" data-view="health">Health</a>
+      <a href="#instagram" data-view="instagram">Instagram</a>
+      <button type="button" id="tab-more">More</button>
     </nav>
-    <div id="sheet" class="sheet" hidden>
+    <div id="backdrop" class="backdrop" hidden></div>
+    <div id="sheet" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div class="grab"></div>
+      <p id="sheet-title" class="sheet-title">More</p>
       <a href="#prompts" data-view="prompts">Prompts</a>
       <a href="#reel" data-view="reel">Reel</a>
+      <a href="#schedule" data-view="schedule">Schedule</a>
+      <a href="#health" data-view="health">Health</a>
+      <a href="#setup" data-view="setup">Setup</a>
       <a href="#settings" data-view="settings">Settings</a>
       <a href="#logs" data-view="logs">Logs</a>
       <button class="btn" id="logout" type="button">Sign out</button>
+      <button class="btn ghost" id="sheet-close" type="button">Close</button>
     </div>
   </div>
   <script src="static/app.js"></script>
