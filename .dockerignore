@@ -1,0 +1,11 @@
+.git
+.github
+.vidrot
+**/__pycache__
+**/*.pyc
+.env
+data
+*.db
+.secret_key
+output/*.mp4
+terminals

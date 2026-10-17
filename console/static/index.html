@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#12140f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="vidrot">
+  <meta name="robots" content="noindex, nofollow">
+  <title>vidrot</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <section id="login" class="login">
+    <form id="login-form">
+      <p class="mark">vidrot<span>.ai</span></p>
+      <p class="tag">private console</p>
+      <h1>Sign in</h1>
+      <p class="muted">This is the owner login. The password is the one set on the server.</p>
+      <label class="field"><span>Password</span>
+        <input id="login-password" type="password" autocomplete="current-password" enterkeyhint="go" required>
+      </label>
+      <button class="btn primary block" type="submit">Sign in</button>
+      <p id="login-error" class="warn" hidden></p>
+    </form>
+  </section>
+
+  <div id="shell" class="app" hidden>
+    <header>
+      <div class="brand">
+        <p class="mark">vidrot<span>.ai</span></p>
+        <button class="btn ghost" id="more-btn" type="button">More</button>
+      </div>
+      <div class="head-row">
+        <div>
+          <h1 id="title">Today</h1>
+          <p id="subtitle"></p>
+        </div>
+        <label class="dry" title="Dry run writes previews and does not call Veo or Instagram">
+          <input type="checkbox" id="dry-run">
+          <span>Dry run</span>
+        </label>
+      </div>
+      <div id="job-status" class="job">Starting</div>
+    </header>
+    <div id="notice" class="banner" hidden></div>
+    <div id="banner" class="banner" hidden></div>
+    <main id="view"></main>
+    <nav id="nav" class="tabbar">
+      <a href="#today" data-view="today">Today</a>
+      <a href="#clips" data-view="clips">Clips</a>
+      <a href="#post" data-view="post">Post</a>
+      <a href="#schedule" data-view="schedule">Schedule</a>
+      <a href="#health" data-view="health">Health</a>
+    </nav>
+    <div id="sheet" class="sheet" hidden>
+      <a href="#prompts" data-view="prompts">Prompts</a>
+      <a href="#reel" data-view="reel">Reel</a>
+      <a href="#settings" data-view="settings">Settings</a>
+      <a href="#logs" data-view="logs">Logs</a>
+      <button class="btn" id="logout" type="button">Sign out</button>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

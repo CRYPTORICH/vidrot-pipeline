@@ -1,2 +1,7 @@
-instagrapi>=2.0.0
+# Prompt generation (pipeline.py) uses the Python standard library only.
+# instagrapi is required only when posting. cryptography encrypts settings at rest.
+# pywebpush is optional at runtime; closed-app alerts use it when VAPID keys are set.
+instagrapi>=2.1.2,<4
 requests>=2.31.0
+cryptography>=42,<50
+pywebpush>=2.0,<3
