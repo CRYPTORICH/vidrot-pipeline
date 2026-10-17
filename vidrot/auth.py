@@ -67,11 +67,16 @@ def read_cookie(header, name=COOKIE):
     return morsel.value if morsel else ""
 
 
+def cookie_path():
+    path = os.environ.get("VIDROT_COOKIE_PATH", "").strip() or "/"
+    return path if path.startswith("/") else "/" + path
+
+
 def cookie_header(token, secure):
     if not token:
-        parts = [f"{COOKIE}=", "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Lax"]
+        parts = [f"{COOKIE}=", f"Path={cookie_path()}", "Max-Age=0", "HttpOnly", "SameSite=Lax"]
     else:
-        parts = [f"{COOKIE}={token}", "Path=/", "Max-Age=1209600", "HttpOnly", "SameSite=Lax"]
+        parts = [f"{COOKIE}={token}", f"Path={cookie_path()}", "Max-Age=1209600", "HttpOnly", "SameSite=Lax"]
     if secure:
         parts.append("Secure")
     return "; ".join(parts)
