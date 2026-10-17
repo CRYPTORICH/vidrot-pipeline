@@ -19,12 +19,22 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from vidrot.auth import COOKIE, Auth, cookie_header, read_cookie
+from vidrot.auth import COOKIE, LOCKOUT_AFTER, LOCKOUT_MESSAGE, Auth, cookie_header, read_cookie
 from vidrot.crypto import require_env_key
-from vidrot.db import get_json, put_json
+from vidrot.db import get_json, put_json, recent_failures
 from vidrot.engine import Engine
 from vidrot.health import collect as collect_health
 from vidrot.instagram import import_session, login as ig_login
+from vidrot.passkey import (
+    authentication_options,
+    finish_authentication,
+    finish_registration,
+    passkey_count,
+    passkey_list,
+    party,
+    registration_options,
+    remove_passkey,
+)
 from vidrot.push import add_subscription, configured as push_configured, public_key
 from vidrot.scheduler import Scheduler
 from vidrot.settings import load as load_settings
@@ -146,6 +156,7 @@ def make_handler(engine, scheduler, auth):
                 "/api/settings": self._settings_get,
                 "/api/history": self._history,
                 "/api/logs": self._logs,
+                "/api/passkeys": self._passkeys,
             }
             if path not in routes:
                 self._json(404, {"ok": False, "error": "Not found"})
@@ -156,6 +167,12 @@ def make_handler(engine, scheduler, auth):
             path = urlparse(self.path).path
             if path == "/api/login":
                 self._login()
+                return
+            if path == "/api/passkey/options":
+                self._passkey_options()
+                return
+            if path == "/api/passkey/login":
+                self._passkey_login()
                 return
             if path == "/api/shutdown":
                 host = self.client_address[0] if self.client_address else ""
@@ -238,6 +255,23 @@ def make_handler(engine, scheduler, auth):
                     remember_ig(engine.folder, {"ok": True})
                 self._json(200 if result.get("ok") else 400, result)
                 return
+            if path == "/api/passkey/register/options":
+                found = party(self.headers.get("Host", ""), request_is_secure(self, auth))
+                if not found:
+                    self._json(400, {"ok": False, "error": "This site is not set up for a passkey yet."})
+                    return
+                self._json(200, registration_options(engine.folder, *found))
+                return
+            if path == "/api/passkey/register":
+                result = finish_registration(engine.folder, body.get("credential") or {})
+                if result.get("ok"):
+                    engine.log("Saved a passkey.")
+                self._json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/api/passkey/delete":
+                removed = remove_passkey(engine.folder, body.get("id") or "")
+                self._json(200 if removed else 404, {"ok": removed, "error": "" if removed else "That passkey is not saved."})
+                return
             if path == "/api/push/subscribe":
                 saved = add_subscription(engine.folder, body.get("subscription") or {})
                 self._json(200 if saved else 400, {"ok": saved, "error": "" if saved else "That push subscription was empty."})
@@ -255,11 +289,44 @@ def make_handler(engine, scheduler, auth):
                 return
             self._json(200, {"ok": True}, cookie=cookie_header(result["token"], request_is_secure(self, auth)))
 
+        def _passkey_options(self):
+            found = party(self.headers.get("Host", ""), request_is_secure(self, auth))
+            if not found:
+                self._json(400, {"ok": False, "error": "This site is not set up for a passkey yet."})
+                return
+            if auth.enabled and recent_failures(auth.folder, client_ip(self)) >= LOCKOUT_AFTER:
+                self._json(401, {"ok": False, "error": LOCKOUT_MESSAGE})
+                return
+            result = authentication_options(auth.folder, *found)
+            self._json(200 if result.get("ok") else 400, result)
+
+        def _passkey_login(self):
+            body = self._body(100_000)
+            if not auth.enabled:
+                self._json(200, {"ok": True, "disabled": True})
+                return
+            ip = client_ip(self)
+            result = finish_authentication(auth.folder, body.get("credential") or {})
+            if not result.get("ok"):
+                auth.note_failure(ip)
+                self._json(401, {"ok": False, "error": result.get("error") or "That passkey was not accepted."})
+                return
+            issued = auth.issue_session(ip, self.headers.get("User-Agent", ""))
+            if not issued.get("ok"):
+                self._json(401, {"ok": False, "error": issued.get("error") or LOCKOUT_MESSAGE})
+                return
+            engine.log("Signed in with a passkey.")
+            self._json(200, {"ok": True}, cookie=cookie_header(issued["token"], request_is_secure(self, auth)))
+
+        def _passkeys(self):
+            self._json(200, {"ok": True, "passkeys": passkey_list(engine.folder)})
+
         def _session(self):
             self._json(200, {
                 "ok": True,
                 "auth_required": auth.enabled,
                 "authenticated": self._authorized(),
+                "passkey": passkey_count(engine.folder) > 0,
                 "push": {"enabled": push_configured(), "publicKey": public_key() if push_configured() else ""},
             })
 

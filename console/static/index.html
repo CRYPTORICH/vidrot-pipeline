@@ -20,11 +20,17 @@
       <p class="mark">vidrot<span>.ai</span></p>
       <p class="tag">private console</p>
       <h1>Sign in</h1>
-      <p class="muted">This is the owner login. The password is the one set on the server.</p>
+      <p id="login-lead" class="muted">Sign in with the password once, then save a passkey for Face ID.</p>
+      <button class="btn primary block" id="passkey-login" type="button" hidden>Sign in with passkey</button>
+      <p id="passkey-note" class="muted" hidden>Face ID or Touch ID confirms the passkey on this iPhone.</p>
+      <p class="or">Recovery password</p>
+      <label class="sr-only"><span>Account</span>
+        <input id="login-user" name="username" type="text" autocomplete="username webauthn" value="owner">
+      </label>
       <label class="field"><span>Password</span>
         <input id="login-password" type="password" autocomplete="current-password" enterkeyhint="go" required>
       </label>
-      <button class="btn primary block" type="submit">Sign in</button>
+      <button class="btn block" type="submit">Sign in with password</button>
       <p id="login-error" class="warn" hidden></p>
     </form>
   </section>
@@ -47,6 +53,10 @@
       </div>
       <div id="job-status" class="job">Starting</div>
     </header>
+    <div id="passkey-offer" class="banner ok" hidden>
+      <p>Save a passkey on this iPhone. Next time, Face ID or Touch ID signs you in.</p>
+      <button class="btn primary" id="passkey-save" type="button">Save passkey</button>
+    </div>
     <div id="notice" class="banner" hidden></div>
     <div id="banner" class="banner" hidden></div>
     <main id="view"></main>

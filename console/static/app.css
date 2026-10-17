@@ -51,6 +51,19 @@ img, video { max-width: 100%; }
   box-shadow: var(--shadow);
 }
 .login h1 { margin: 18px 0 8px; font-size: 32px; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+.login .btn { margin-top: 10px; }
+.login .or { margin: 18px 0 0; color: var(--muted); font-size: 13px; text-align: center; }
+#passkey-offer p { margin: 0 0 10px; }
 .warn { color: #f0d2c6; margin: 12px 0 0; }
 
 .app { min-height: 100dvh; padding-bottom: calc(76px + env(safe-area-inset-bottom)); }

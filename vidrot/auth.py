@@ -8,6 +8,7 @@ from vidrot import db
 
 COOKIE = "vidrot_session"
 LOCKOUT_AFTER = 8
+LOCKOUT_MESSAGE = "Too many tries. Wait 15 minutes, then try again."
 
 
 def passwords_match(got, expected):
@@ -37,7 +38,7 @@ class Auth:
         if not self.enabled:
             return {"ok": True, "disabled": True}
         if db.recent_failures(self.folder, ip) >= LOCKOUT_AFTER:
-            return {"ok": False, "error": "Too many tries. Wait 15 minutes, then try the password again."}
+            return {"ok": False, "error": LOCKOUT_MESSAGE}
         if not passwords_match(password, self.password):
             db.record_attempt(self.folder, ip, False)
             return {"ok": False, "error": "Wrong password."}
@@ -50,6 +51,20 @@ class Auth:
         if not self.enabled:
             return True
         return db.session_valid(self.folder, token)
+
+    def issue_session(self, ip, user_agent):
+        if not self.enabled:
+            return {"ok": True, "disabled": True}
+        if db.recent_failures(self.folder, ip) >= LOCKOUT_AFTER:
+            return {"ok": False, "error": LOCKOUT_MESSAGE}
+        token = secrets.token_urlsafe(32)
+        db.create_session(self.folder, token, user_agent)
+        db.record_attempt(self.folder, ip, True)
+        return {"ok": True, "token": token}
+
+    def note_failure(self, ip):
+        if self.enabled:
+            db.record_attempt(self.folder, ip, False)
 
     def logout(self, token):
         db.delete_session(self.folder, token)

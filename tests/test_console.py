@@ -1,4 +1,5 @@
 """Console pipeline tests. No Gemini key and no Instagram account."""
+import hashlib
 import json
 import os
 import tempfile
@@ -9,6 +10,12 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
+
+import cbor2
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+from webauthn.helpers import bytes_to_base64url
 
 from console.server import serve
 from vidrot.auth import Auth, cookie_header, cookie_path
@@ -531,7 +538,7 @@ class BasePathTests(unittest.TestCase):
         self.assertNotIn('"/api', app)
         self.assertNotIn("'/api", app)
         self.assertNotIn("/media/", app)
-        self.assertIn('const CACHE = "vidrot-shell-5"', sw)
+        self.assertIn('const CACHE = "vidrot-shell-6"', sw)
         self.assertIn("self.registration.scope", sw)
         self.assertIn('"static/app.js"', sw)
         self.assertNotIn('"/static/', sw)
@@ -659,6 +666,192 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn("powershell", launched.lower())
         stop = (root / "windows" / "Stop Vidrot.vbs").read_text(encoding="utf-8")
         self.assertIn("/api/shutdown", stop)
+
+
+class FakePasskey:
+    """ES256 platform credential. Signatures are raw r||s, the Apple shape."""
+
+    def __init__(self):
+        self.key = ec.generate_private_key(ec.SECP256R1())
+        self.credential_id = os.urandom(16)
+
+    def registration(self, options, origin):
+        client = _client_data("webauthn.create", options["challenge"], origin)
+        cose = self._cose()
+        auth_data = self._auth_data(options["rp"]["id"], attested=True, cose=cose, sign_count=0)
+        attestation = cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": auth_data})
+        raw_id = bytes_to_base64url(self.credential_id)
+        return {
+            "id": raw_id,
+            "rawId": raw_id,
+            "type": "public-key",
+            "response": {
+                "clientDataJSON": bytes_to_base64url(client),
+                "attestationObject": bytes_to_base64url(attestation),
+            },
+        }
+
+    def authentication(self, options, origin, sign_count=0):
+        client = _client_data("webauthn.get", options["challenge"], origin)
+        auth_data = self._auth_data(options["rpId"], attested=False, cose=b"", sign_count=sign_count)
+        digest = hashlib.sha256(client).digest()
+        der = self.key.sign(auth_data + digest, ec.ECDSA(hashes.SHA256()))
+        r, s = decode_dss_signature(der)
+        raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+        raw_id = bytes_to_base64url(self.credential_id)
+        return {
+            "id": raw_id,
+            "rawId": raw_id,
+            "type": "public-key",
+            "response": {
+                "clientDataJSON": bytes_to_base64url(client),
+                "authenticatorData": bytes_to_base64url(auth_data),
+                "signature": bytes_to_base64url(raw),
+            },
+        }
+
+    def _cose(self):
+        numbers = self.key.public_key().public_numbers()
+        return cbor2.dumps({
+            1: 2,
+            3: -7,
+            -1: 1,
+            -2: numbers.x.to_bytes(32, "big"),
+            -3: numbers.y.to_bytes(32, "big"),
+        })
+
+    def _auth_data(self, rp_id, attested, cose, sign_count):
+        flags = 0x01 | 0x04 | (0x40 if attested else 0)
+        body = hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + int(sign_count).to_bytes(4, "big")
+        if attested:
+            body += bytes(16) + len(self.credential_id).to_bytes(2, "big") + self.credential_id + cose
+        return body
+
+
+def _client_data(kind, challenge, origin):
+    return json.dumps(
+        {"type": kind, "challenge": challenge, "origin": origin},
+        separators=(",", ":"),
+    ).encode()
+
+
+class PasskeyTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+        os.environ["VIDROT_DISABLE_SCHEDULER"] = "1"
+        os.environ.pop("VIDROT_RP_ID", None)
+        os.environ.pop("VIDROT_ORIGIN", None)
+        self.engine = make_engine(self.folder)
+        self.auth = Auth("correct-horse-battery", self.folder, secure=True)
+        self.httpd = serve(0, engine=self.engine, auth=self.auth)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        port = self.httpd.server_address[1]
+        self.base = f"http://127.0.0.1:{port}"
+        # secure=True matches VIDROT_SECURE behind nginx: the passkey origin is https.
+        self.origin = f"https://127.0.0.1:{port}"
+        self.cookie = ""
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.tmp.cleanup()
+        os.environ.pop("VIDROT_RP_ID", None)
+        os.environ.pop("VIDROT_ORIGIN", None)
+
+    def call(self, method, path, body=None, cookie=True):
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(self.base + path, data=data, method=method)
+        req.add_header("X-Vidrot-Request", "1")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        if cookie and self.cookie:
+            req.add_header("Cookie", self.cookie)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self._take_cookie(resp.headers)
+                return resp.status, json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            self._take_cookie(exc.headers)
+            return exc.code, json.loads(exc.read().decode() or "{}")
+
+    def _take_cookie(self, headers):
+        set_cookie = headers.get("Set-Cookie") or ""
+        if "vidrot_session=" in set_cookie:
+            self.cookie = set_cookie.split(";", 1)[0]
+
+    def login_password(self):
+        code, _ = self.call("POST", "/api/login", {"password": "correct-horse-battery"}, cookie=False)
+        self.assertEqual(code, 200)
+        self.assertTrue(self.cookie)
+
+    def test_passkey_is_platform_resident_and_verified(self):
+        code, denied = self.call("POST", "/api/passkey/register/options", {}, cookie=False)
+        self.assertEqual(code, 401)
+        code, session = self.call("GET", "/api/session", cookie=False)
+        self.assertFalse(session["passkey"])
+        code, missing = self.call("POST", "/api/passkey/options", {}, cookie=False)
+        self.assertEqual(code, 400)
+        self.assertIn("password", missing["error"])
+        self.login_password()
+        code, options = self.call("POST", "/api/passkey/register/options", {})
+        self.assertEqual(code, 200)
+        public = options["publicKey"]
+        self.assertEqual(public["rp"]["id"], "127.0.0.1")
+        self.assertEqual(public["rp"]["name"], "vidrot")
+        self.assertEqual(public["authenticatorSelection"]["authenticatorAttachment"], "platform")
+        self.assertEqual(public["authenticatorSelection"]["residentKey"], "required")
+        self.assertEqual(public["authenticatorSelection"]["userVerification"], "required")
+        self.assertEqual(public["pubKeyCredParams"][0], {"type": "public-key", "alg": -7})
+        self.assertEqual(public["pubKeyCredParams"][1], {"type": "public-key", "alg": -257})
+        self.assertIn("client-device", public["hints"])
+        page = (Path(__file__).resolve().parents[1] / "console" / "static" / "index.html").read_text()
+        self.assertIn("Sign in with passkey", page)
+        script = (Path(__file__).resolve().parents[1] / "console" / "static" / "app.js").read_text()
+        self.assertIn('post("api/passkey/login"', script)
+        self.assertIn("navigator.credentials.get", script)
+        self.assertIn("navigator.credentials.create", script)
+
+    def test_register_and_sign_in_with_a_raw_apple_signature(self):
+        self.login_password()
+        code, options = self.call("POST", "/api/passkey/register/options", {})
+        device = FakePasskey()
+        code, saved = self.call("POST", "/api/passkey/register", {"credential": device.registration(options["publicKey"], self.origin)})
+        self.assertEqual(code, 200, saved)
+        self.assertTrue(saved["ok"])
+        code, listed = self.call("GET", "/api/passkeys")
+        self.assertEqual(len(listed["passkeys"]), 1)
+        code, _ = self.call("POST", "/api/logout", {})
+        self.cookie = ""
+        code, session = self.call("GET", "/api/session", cookie=False)
+        self.assertTrue(session["passkey"])
+        self.assertFalse(session["authenticated"])
+        code, login_options = self.call("POST", "/api/passkey/options", {}, cookie=False)
+        self.assertEqual(code, 200)
+        self.assertEqual(login_options["publicKey"]["userVerification"], "required")
+        self.assertEqual(login_options["publicKey"]["allowCredentials"], [])
+        assertion = device.authentication(login_options["publicKey"], self.origin, sign_count=0)
+        code, signed = self.call("POST", "/api/passkey/login", {"credential": assertion}, cookie=False)
+        self.assertEqual(code, 200, signed)
+        code, state = self.call("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertTrue(state["ok"])
+        # Apple synced passkeys keep sign count at 0. A second sign-in must still work.
+        code, _ = self.call("POST", "/api/logout", {})
+        self.cookie = ""
+        code, again_options = self.call("POST", "/api/passkey/options", {}, cookie=False)
+        again = device.authentication(again_options["publicKey"], self.origin, sign_count=0)
+        code, second = self.call("POST", "/api/passkey/login", {"credential": again}, cookie=False)
+        self.assertEqual(code, 200, second)
+        # The challenge is single use.
+        code, replay = self.call("POST", "/api/passkey/login", {"credential": again}, cookie=False)
+        self.assertEqual(code, 401)
+        self.assertIn("not accepted", replay["error"])
+        # A signature for a different origin is rejected.
+        code, third_options = self.call("POST", "/api/passkey/options", {}, cookie=False)
+        foreign = device.authentication(third_options["publicKey"], "https://evil.example", sign_count=0)
+        code, rejected = self.call("POST", "/api/passkey/login", {"credential": foreign}, cookie=False)
+        self.assertEqual(code, 401)
 
 
 if __name__ == "__main__":

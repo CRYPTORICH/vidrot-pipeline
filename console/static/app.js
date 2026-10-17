@@ -15,6 +15,7 @@ let state = { run: null, busy: false, dry_run: true, scheduler: {}, notice: null
 let settings = null;
 let view = "today";
 let signedIn = false;
+let passkeyReady = false;
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -207,9 +208,18 @@ function renderHealth(health) {
     <p class="muted">${health.last_run ? "Last run " + esc(health.last_run.id) + " is " + esc(health.last_run.phase) + "." : "No run yet."}</p>`;
 }
 
-function renderSettings() {
+function renderSettings(passkeys) {
   if (!settings) return `<p class="muted">Loading…</p>`;
+  const saved = (passkeys || []).map((item) => `
+    <p class="muted">Saved ${esc(item.created_at)}${item.backed_up ? " · synced" : ""}</p>
+    <button class="btn" type="button" data-passkey="${esc(item.id)}">Remove passkey</button>`).join("");
   return `
+    <div class="card">
+      <h2>Passkey</h2>
+      <p class="muted">An Apple passkey on this iPhone. Face ID or Touch ID signs you in. The password stays here if you lose the phone.</p>
+      ${saved || `<p class="muted">No passkey saved yet.</p>`}
+      <div class="row"><button class="btn primary" id="save-passkey" type="button">Save a passkey</button></div>
+    </div>
     <p class="muted">Saved on the server at ${esc(settings.data_dir)}. Encrypted. Not in git.</p>
     <label class="field"><span>Gemini API key ${settings.gemini_api_key_set ? "(" + esc(settings.gemini_api_key_mask) + " saved)" : ""}</span>
       <input id="set-key" type="password" autocomplete="off" placeholder="${settings.gemini_api_key_set ? "Leave blank to keep the saved key" : "Or set GEMINI_API_KEY on the host"}"></label>
@@ -310,7 +320,7 @@ async function draw() {
   else if (view === "post") root.innerHTML = renderPost((await api("api/history")).posts);
   else if (view === "schedule") root.innerHTML = renderSchedule();
   else if (view === "health") root.innerHTML = renderHealth((await api("api/health")).health);
-  else if (view === "settings") root.innerHTML = renderSettings();
+  else if (view === "settings") root.innerHTML = renderSettings((await api("api/passkeys")).passkeys || []);
   else if (view === "logs") root.innerHTML = renderLogs((await api("api/logs")).lines);
   wire();
   paintNotice();
@@ -368,6 +378,22 @@ function wire() {
   if (saveSet) saveSet.onclick = saveSettingsForm;
   const sessionFile = document.getElementById("set-session");
   if (sessionFile) sessionFile.onchange = () => importSession(sessionFile.files && sessionFile.files[0]);
+  const savePasskey = document.getElementById("save-passkey");
+  if (savePasskey) savePasskey.onclick = () => createPasskey();
+  document.querySelectorAll("[data-passkey]").forEach((button) => {
+    button.onclick = async () => {
+      const result = await post("api/passkey/delete", { id: button.dataset.passkey });
+      if (!result.ok) {
+        setBanner(result.error || "Could not remove that passkey.", false);
+        return;
+      }
+      const session = await api("api/session");
+      passkeyReady = !!session.passkey;
+      paintPasskey();
+      setBanner("Passkey removed.", true);
+      if (view === "settings") route();
+    };
+  });
 }
 
 function show(result, preferDetail) {
@@ -513,18 +539,132 @@ function showLogin(message) {
   signedIn = false;
   document.getElementById("login").hidden = false;
   document.getElementById("shell").hidden = true;
+  paintPasskey();
   const err = document.getElementById("login-error");
   if (message) {
     err.hidden = false;
     err.textContent = message;
+  } else {
+    err.hidden = true;
+    err.textContent = "";
   }
+}
+
+function paintPasskey() {
+  const supported = typeof PublicKeyCredential !== "undefined";
+  const button = document.getElementById("passkey-login");
+  const note = document.getElementById("passkey-note");
+  const lead = document.getElementById("login-lead");
+  const offer = document.getElementById("passkey-offer");
+  if (button) button.hidden = !supported || !passkeyReady;
+  if (note) note.hidden = !supported || !passkeyReady;
+  if (lead) {
+    lead.textContent = passkeyReady
+      ? "Use the passkey on this iPhone. Face ID or Touch ID confirms it."
+      : "Sign in with the password once, then save a passkey for Face ID.";
+  }
+  if (offer) offer.hidden = !signedIn || !supported || passkeyReady;
+}
+
+function b64urlToBuf(value) {
+  const pad = "=".repeat((4 - (value.length % 4)) % 4);
+  const b64 = (value + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function bufToB64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let raw = "";
+  for (const byte of bytes) raw += String.fromCharCode(byte);
+  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function credentialToJSON(cred) {
+  const response = { clientDataJSON: bufToB64url(cred.response.clientDataJSON) };
+  if (cred.response.attestationObject) response.attestationObject = bufToB64url(cred.response.attestationObject);
+  if (cred.response.authenticatorData) response.authenticatorData = bufToB64url(cred.response.authenticatorData);
+  if (cred.response.signature) response.signature = bufToB64url(cred.response.signature);
+  if (cred.response.userHandle) response.userHandle = bufToB64url(cred.response.userHandle);
+  return { id: cred.id, rawId: bufToB64url(cred.rawId), type: cred.type, response };
+}
+
+function creationOptions(publicKey) {
+  return Object.assign({}, publicKey, {
+    challenge: b64urlToBuf(publicKey.challenge),
+    user: Object.assign({}, publicKey.user, { id: b64urlToBuf(publicKey.user.id) }),
+    excludeCredentials: (publicKey.excludeCredentials || []).map((cred) => Object.assign({}, cred, { id: b64urlToBuf(cred.id) })),
+  });
+}
+
+function requestOptions(publicKey) {
+  return Object.assign({}, publicKey, {
+    challenge: b64urlToBuf(publicKey.challenge),
+    allowCredentials: (publicKey.allowCredentials || []).map((cred) => Object.assign({}, cred, { id: b64urlToBuf(cred.id) })),
+  });
+}
+
+async function createPasskey() {
+  if (typeof PublicKeyCredential === "undefined") {
+    setBanner("This browser cannot save a passkey. Open the site in Safari.", false);
+    return;
+  }
+  const options = await post("api/passkey/register/options", {});
+  if (!options.ok || !options.publicKey) {
+    setBanner(options.error || "Could not start the passkey.", false);
+    return;
+  }
+  let cred;
+  try {
+    cred = await navigator.credentials.create({ publicKey: creationOptions(options.publicKey) });
+  } catch (err) {
+    setBanner("Passkey was cancelled.", false);
+    return;
+  }
+  const result = await post("api/passkey/register", { credential: credentialToJSON(cred) });
+  if (!result.ok) {
+    setBanner(result.error || "Could not save the passkey.", false);
+    return;
+  }
+  passkeyReady = true;
+  paintPasskey();
+  setBanner("Passkey saved. Next time, Face ID or Touch ID signs you in.", true);
+  if (view === "settings") route();
+}
+
+async function signInWithPasskey() {
+  const options = await post("api/passkey/options", {});
+  if (!options.ok || !options.publicKey) {
+    showLogin(options.error || "Could not start the passkey.");
+    return;
+  }
+  let cred;
+  try {
+    cred = await navigator.credentials.get({ publicKey: requestOptions(options.publicKey) });
+  } catch (err) {
+    showLogin("Passkey was cancelled. You can still use the password.");
+    return;
+  }
+  const result = await post("api/passkey/login", { credential: credentialToJSON(cred) });
+  if (!result.ok) {
+    showLogin(result.error || "Could not sign in with that passkey.");
+    return;
+  }
+  document.getElementById("login-password").value = "";
+  await boot();
 }
 
 function showShell() {
   signedIn = true;
   document.getElementById("login").hidden = true;
   document.getElementById("shell").hidden = false;
+  paintPasskey();
 }
+
+document.getElementById("passkey-login").addEventListener("click", () => signInWithPasskey());
+document.getElementById("passkey-save").addEventListener("click", () => createPasskey());
 
 document.getElementById("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -563,6 +703,7 @@ window.addEventListener("hashchange", route);
 
 async function boot() {
   const session = await api("api/session");
+  passkeyReady = !!session.passkey;
   if (session.auth_required && !session.authenticated) {
     showLogin();
     return;
