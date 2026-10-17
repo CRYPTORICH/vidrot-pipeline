@@ -42,13 +42,14 @@ def collect(settings, folder, run=None, veo_check=True):
 
     ig = describe_instagram(settings, folder)
     if ig["session_saved"]:
-        ig_detail = "A session is saved on the server. Health does not log in, so Instagram is not poked on every refresh."
+        name = ig.get("username") or "the account"
+        ig_detail = f"Connected as {name}. Health does not log in on every refresh."
         ig_ok = True
     elif ig["password"]:
-        ig_detail = "Password saved, no session file yet. The first post creates the session."
-        ig_ok = True
+        ig_detail = "Password saved, not connected yet. Open Instagram and tap Connect."
+        ig_ok = False
     else:
-        ig_detail = "No password and no session file."
+        ig_detail = "Not connected. Open Instagram and sign in."
         ig_ok = False
 
     binary = ffmpeg_bin(settings.get("ffmpeg_path") or "")
@@ -62,7 +63,7 @@ def collect(settings, folder, run=None, veo_check=True):
         free_gb = usage.free / (1024 ** 3)
         disk = {
             "ok": free_gb >= 1,
-            "detail": f"{free_gb:.1f} GB free in {folder}",
+            "detail": f"{free_gb:.1f} GB free",
         }
     except OSError as exc:
         disk = {"ok": False, "detail": str(exc)}

@@ -1,4 +1,4 @@
-const CACHE = "vidrot-shell-5";
+const CACHE = "vidrot-shell-6";
 // Paths are relative to the service worker, so the app works at / or under a prefix like /vidrot/.
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, "");
 const SHELL = ["./", "static/app.css", "static/app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png"];
