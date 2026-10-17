@@ -8,9 +8,10 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urljoin
 
 from console.server import serve
-from vidrot.auth import Auth
+from vidrot.auth import Auth, cookie_header, cookie_path
 from vidrot.brand import ffmpeg_text, normalize_command
 from vidrot.engine import Engine
 from vidrot import health
@@ -445,6 +446,125 @@ class AuthTests(unittest.TestCase):
         code, locked = self.call("POST", "/api/login", {"password": "correct-horse-battery"}, cookie=False)
         self.assertEqual(code, 401)
         self.assertIn("15 minutes", locked["error"])
+
+
+class BasePathTests(unittest.TestCase):
+    def tearDown(self):
+        os.environ.pop("VIDROT_COOKIE_PATH", None)
+
+    def test_cookie_path_defaults_to_root_and_prefixes_a_subpath(self):
+        self.assertEqual(cookie_path(), "/")
+        root = cookie_header("token", False)
+        self.assertIn("Path=/", root)
+        self.assertNotIn("Path=/vidrot", root)
+        os.environ["VIDROT_COOKIE_PATH"] = "vidrot"
+        self.assertEqual(cookie_path(), "/vidrot")
+        os.environ["VIDROT_COOKIE_PATH"] = "/vidrot/"
+        self.assertEqual(cookie_path(), "/vidrot/")
+        login = cookie_header("token", True)
+        self.assertIn("vidrot_session=token", login)
+        self.assertIn("Path=/vidrot/", login)
+        self.assertIn("HttpOnly", login)
+        self.assertIn("SameSite=Lax", login)
+        self.assertIn("Secure", login)
+        logout = cookie_header("", True)
+        self.assertIn("vidrot_session=", logout)
+        self.assertIn("Path=/vidrot/", logout)
+        self.assertIn("Max-Age=0", logout)
+        os.environ["VIDROT_COOKIE_PATH"] = "   "
+        self.assertEqual(cookie_path(), "/")
+
+    def test_login_cookie_uses_the_configured_path(self):
+        os.environ["VIDROT_COOKIE_PATH"] = "/vidrot"
+        os.environ["VIDROT_DISABLE_SCHEDULER"] = "1"
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = make_engine(tmp)
+            auth = Auth("correct-horse-battery", Path(tmp), secure=True)
+            httpd = serve(0, engine=engine, auth=auth)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            self.addCleanup(httpd.shutdown)
+            base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            req = urllib.request.Request(
+                base + "/api/login",
+                data=json.dumps({"password": "correct-horse-battery"}).encode(),
+                method="POST",
+            )
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                set_cookie = resp.headers.get("Set-Cookie")
+            self.assertIn("Path=/vidrot", set_cookie)
+            self.assertIn("HttpOnly", set_cookie)
+            self.assertIn("Secure", set_cookie)
+            logout = urllib.request.Request(
+                base + "/api/logout",
+                data=b"{}",
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Vidrot-Request": "1",
+                    "Cookie": set_cookie.split(";", 1)[0],
+                },
+            )
+            with urllib.request.urlopen(logout, timeout=5) as resp:
+                cleared = resp.headers.get("Set-Cookie")
+            self.assertIn("Path=/vidrot", cleared)
+            self.assertIn("Max-Age=0", cleared)
+
+    def test_relative_urls_resolve_at_root_and_under_a_prefix(self):
+        root = Path(__file__).resolve().parents[1]
+        index = (root / "console" / "static" / "index.html").read_text()
+        app = (root / "console" / "static" / "app.js").read_text()
+        manifest = json.loads((root / "console" / "static" / "manifest.webmanifest").read_text())
+        sw = (root / "console" / "static" / "sw.js").read_text()
+        self.assertIn('href="static/app.css"', index)
+        self.assertIn('src="static/app.js"', index)
+        self.assertIn('href="manifest.webmanifest"', index)
+        self.assertNotIn('href="/', index)
+        self.assertNotIn('src="/', index)
+        self.assertEqual(manifest["start_url"], "./")
+        self.assertEqual(manifest["scope"], "./")
+        for icon in manifest["icons"]:
+            self.assertFalse(icon["src"].startswith("/"))
+        self.assertIn('api("api/session")', app)
+        self.assertIn('register("sw.js")', app)
+        self.assertNotIn('"/api', app)
+        self.assertNotIn("'/api", app)
+        self.assertNotIn("/media/", app)
+        self.assertIn('const CACHE = "vidrot-shell-5"', sw)
+        self.assertIn("self.registration.scope", sw)
+        self.assertIn('"static/app.js"', sw)
+        self.assertNotIn('"/static/', sw)
+
+        page_root = "http://127.0.0.1:8765/"
+        page_prefix = "https://racksrewards.com/vidrot/"
+        for rel in (
+            "static/app.css",
+            "static/app.js",
+            "api/session",
+            "sw.js",
+            "manifest.webmanifest",
+            "icons/icon-192.png",
+            "media/clips/clip.mp4",
+        ):
+            self.assertEqual(urljoin(page_root, rel), "http://127.0.0.1:8765/" + rel)
+            self.assertEqual(urljoin(page_prefix, rel), "https://racksrewards.com/vidrot/" + rel)
+        # A directory URL without the trailing slash drops the prefix.
+        self.assertEqual(
+            urljoin("https://racksrewards.com/vidrot", "static/app.css"),
+            "https://racksrewards.com/static/app.css",
+        )
+
+        def stripped(scope, pathname):
+            base = scope[:-1] if scope.endswith("/") else scope
+            if base and pathname.startswith(base):
+                return pathname[len(base):]
+            return pathname
+
+        self.assertEqual(stripped("/", "/api/state"), "/api/state")
+        self.assertEqual(stripped("/vidrot/", "/vidrot/api/state"), "/api/state")
+        self.assertEqual(stripped("/vidrot/", "/vidrot/static/app.css"), "/static/app.css")
+        self.assertTrue(stripped("/vidrot/", "/vidrot/healthz") == "/healthz")
 
 
 class InstagramSessionTests(unittest.TestCase):

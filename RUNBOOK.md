@@ -47,6 +47,29 @@ fly deploy --app vidrot
 
 Changing `VIDROT_SECRET_KEY` later makes saved secrets unreadable. Set it once and leave it.
 
+## Self-hosted on EC2 behind nginx/Cloudflare under a subpath
+
+The live app is already on the owner's AWS EC2 box, not on Fly. Open it at `https://racksrewards.com/vidrot/` (the trailing slash matters). Cloudflare terminates HTTPS. nginx listens on port 80 and proxies `/vidrot/` to the app with that prefix stripped, so Python still sees `/`, `/api`, and `/static`.
+
+| Piece | Value |
+| --- | --- |
+| pm2 process | `VIDROT` |
+| Env file | `/home/ubuntu/.config/vidrot/vidrot.env` |
+| Data directory | `/home/ubuntu/vidrot-data` |
+| Listen address | `127.0.0.1:8765` |
+
+The env file should set `VIDROT_HOST=127.0.0.1`, `VIDROT_PORT=8765`, `VIDROT_DATA=/home/ubuntu/vidrot-data`, `VIDROT_COOKIE_PATH=/vidrot`, plus `VIDROT_PASSWORD` and `VIDROT_SECRET_KEY`. The bind is loopback, so the process will start without a password and nginx would then expose an open console. `VIDROT_SECURE=1` and `VIDROT_TRUST_PROXY=1` keep the session cookie Secure and the lockout on the visitor IP. `VIDROT_COOKIE_PATH=/vidrot` stops that cookie from being sent to the rest of racksrewards.com.
+
+Front-end URLs are relative to the page. At `https://racksrewards.com/vidrot/` they stay under `/vidrot/`. At `http://127.0.0.1:8765/` they stay at the root. Opening `https://racksrewards.com/vidrot` with no slash makes the browser request `/static/...` on the bare domain, which nginx does not send to this app.
+
+Update the box from the repo checkout:
+
+```bash
+git pull
+pip install -r requirements.txt
+pm2 restart VIDROT --update-env
+```
+
 ## Environment variables
 
 Set these as Fly secrets. None of them belong in git.
@@ -60,6 +83,7 @@ Set these as Fly secrets. None of them belong in git.
 | `IG_PASSWORD` | Only if you do not import a session | Instagram password. The first successful login stores a session. |
 | `IG_PROXY` | No | `http://user:pass@host:port` for a proxy you control. See the Instagram note below. |
 | `VIDROT_TZ` | No | Clock for 09:00 and 12:00. Default in the app is `America/New_York`. |
+| `VIDROT_COOKIE_PATH` | On a subpath | Cookie `Path`. Default `/`. On the EC2 host set `/vidrot`. |
 | `VIDROT_VAPID_PUBLIC` / `VIDROT_VAPID_PRIVATE` | No | Closed-app alerts. Without them, the status bar in the app is the alert. |
 | `VIDROT_VAPID_SUBJECT` | With the VAPID keys | `mailto:richybeats1@gmail.com` is a fine subject. |
 

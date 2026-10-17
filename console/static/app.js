@@ -122,9 +122,9 @@ function renderPrompts() {
 }
 
 function clipCard(prompt) {
-  const poster = prompt.clip ? `/media/posters/${esc(prompt.clip.replace(/\.mp4$/, ".png"))}` : "";
+  const poster = prompt.clip ? `media/posters/${esc(prompt.clip.replace(/\.mp4$/, ".png"))}` : "";
   const still = poster ? `<img class="still" src="${poster}" alt="Preview">` : "";
-  const video = prompt.clip ? `<video src="/media/clips/${esc(prompt.clip)}" ${poster ? `poster="${poster}"` : ""} preload="none" playsinline controls></video>` : "";
+  const video = prompt.clip ? `<video src="media/clips/${esc(prompt.clip)}" ${poster ? `poster="${poster}"` : ""} preload="none" playsinline controls></video>` : "";
   return `<article class="clip"><h3>${esc(prompt.channel)}</h3>${statusPill(prompt.status)}${still}${video}<p>${esc((prompt.prompt || "").slice(0, 140))}</p>${prompt.error ? `<p class="muted">${esc(prompt.error)}</p>` : ""}</article>`;
 }
 
@@ -137,8 +137,8 @@ function renderClips() {
 function renderReel() {
   const run = state.run;
   if (!run || !run.reel) return `<p class="muted">Stitch a reel from Today after at least one clip is ready.</p>`;
-  const poster = run.poster ? `/media/posters/${esc(run.poster)}` : "";
-  return `<div class="reel"><video src="/media/reels/${esc(run.reel)}" ${poster ? `poster="${poster}"` : ""} preload="none" playsinline controls></video><p class="muted">${esc(run.reel)}</p></div>`;
+  const poster = run.poster ? `media/posters/${esc(run.poster)}` : "";
+  return `<div class="reel"><video src="media/reels/${esc(run.reel)}" ${poster ? `poster="${poster}"` : ""} preload="none" playsinline controls></video><p class="muted">${esc(run.reel)}</p></div>`;
 }
 
 function renderPost(history) {
@@ -290,7 +290,7 @@ function maybeNotify(previous, next) {
   const body = next.run.error || title;
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   try {
-    new Notification(title, { body, icon: "/icons/icon-192.png" });
+    new Notification(title, { body, icon: "icons/icon-192.png" });
   } catch (err) {
     /* the in-app bar still shows the same status */
   }
@@ -307,11 +307,11 @@ async function draw() {
   else if (view === "prompts") root.innerHTML = renderPrompts();
   else if (view === "clips") root.innerHTML = renderClips();
   else if (view === "reel") root.innerHTML = renderReel();
-  else if (view === "post") root.innerHTML = renderPost((await api("/api/history")).posts);
+  else if (view === "post") root.innerHTML = renderPost((await api("api/history")).posts);
   else if (view === "schedule") root.innerHTML = renderSchedule();
-  else if (view === "health") root.innerHTML = renderHealth((await api("/api/health")).health);
+  else if (view === "health") root.innerHTML = renderHealth((await api("api/health")).health);
   else if (view === "settings") root.innerHTML = renderSettings();
-  else if (view === "logs") root.innerHTML = renderLogs((await api("/api/logs")).lines);
+  else if (view === "logs") root.innerHTML = renderLogs((await api("api/logs")).lines);
   wire();
   paintNotice();
   const run = state.run;
@@ -321,11 +321,11 @@ async function draw() {
 
 function wire() {
   const batch = document.getElementById("act-batch");
-  if (batch) batch.onclick = () => act("/api/batch", {});
+  if (batch) batch.onclick = () => act("api/batch", {});
   const render = document.getElementById("act-render");
-  if (render) render.onclick = () => act("/api/render", {});
+  if (render) render.onclick = () => act("api/render", {});
   const brand = document.getElementById("act-brand");
-  if (brand) brand.onclick = () => act("/api/brand", {});
+  if (brand) brand.onclick = () => act("api/brand", {});
   const postBtn = document.getElementById("act-post");
   if (postBtn) postBtn.onclick = () => { location.hash = "#post"; };
   const save = document.getElementById("save-prompts");
@@ -333,14 +333,14 @@ function wire() {
   document.querySelectorAll(".regen").forEach((button) => {
     button.onclick = async () => {
       const id = button.closest(".prompt").dataset.id;
-      const result = await post("/api/prompts/regenerate", { id });
+      const result = await post("api/prompts/regenerate", { id });
       show(result);
       await refresh();
     };
   });
   const doPost = document.getElementById("do-post");
   if (doPost) doPost.onclick = async () => {
-    const result = await post("/api/post", {
+    const result = await post("api/post", {
       caption: document.getElementById("post-caption").value,
       verification_code: document.getElementById("post-code").value,
     });
@@ -350,16 +350,16 @@ function wire() {
   const retry = document.getElementById("retry-ig");
   if (retry) retry.onclick = async () => {
     const code = document.getElementById("post-code").value;
-    show(await post("/api/instagram/test", { verification_code: code }), true);
+    show(await post("api/instagram/test", { verification_code: code }), true);
     await refresh();
   };
   const saveSched = document.getElementById("save-schedule");
   if (saveSched) saveSched.onclick = saveSchedule;
   const testVeo = document.getElementById("test-veo");
-  if (testVeo) testVeo.onclick = async () => show(await post("/api/veo/test", {}), true);
+  if (testVeo) testVeo.onclick = async () => show(await post("api/veo/test", {}), true);
   const testIg = document.getElementById("test-ig");
   if (testIg) testIg.onclick = async () => {
-    show(await post("/api/instagram/test", {}), true);
+    show(await post("api/instagram/test", {}), true);
     await refresh();
   };
   const alerts = document.getElementById("enable-alerts");
@@ -388,13 +388,13 @@ async function savePrompts() {
     prompt: node.querySelector(".prompt-text").value,
     caption: node.querySelector(".caption-text").value,
   }));
-  show(await post("/api/prompts", { prompts }));
+  show(await post("api/prompts", { prompts }));
   await refresh();
 }
 
 async function saveSchedule() {
   const weekdays = [...document.querySelectorAll(".day")].filter((box) => box.checked).map((box) => Number(box.value));
-  const result = await post("/api/schedule", {
+  const result = await post("api/schedule", {
     batch_enabled: document.getElementById("batch-on").checked,
     batch_time: document.getElementById("batch-time").value,
     post_enabled: document.getElementById("post-on").checked,
@@ -424,7 +424,7 @@ async function saveSettingsForm() {
   if (key) payload.gemini_api_key = key;
   if (password) payload.ig_password = password;
   if (proxy) payload.ig_proxy = proxy;
-  const result = await post("/api/settings", payload);
+  const result = await post("api/settings", payload);
   show(result.error ? result : { ok: true, detail: "Settings saved on the server." }, true);
   if (result.settings) settings = result.settings;
   await refresh();
@@ -439,9 +439,9 @@ async function importSession(file) {
     show({ ok: false, error: "That file is not JSON." });
     return;
   }
-  const result = await post("/api/instagram/session", { session: parsed });
+  const result = await post("api/instagram/session", { session: parsed });
   show(result.ok ? { ok: true, detail: "Instagram session imported." } : result, true);
-  settings = (await api("/api/settings")).settings || settings;
+  settings = (await api("api/settings")).settings || settings;
   await refresh();
 }
 
@@ -455,7 +455,7 @@ async function enableAlerts() {
     setBanner("Alerts stay off. The status bar on this page still updates.", false);
     return;
   }
-  const session = await api("/api/session");
+  const session = await api("api/session");
   const key = session.push && session.push.publicKey;
   if (key && "serviceWorker" in navigator && "PushManager" in window) {
     try {
@@ -464,7 +464,7 @@ async function enableAlerts() {
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(key),
       });
-      await post("/api/push/subscribe", { subscription: subscription.toJSON() });
+      await post("api/push/subscribe", { subscription: subscription.toJSON() });
       setBanner("Alerts are on, including when the app is closed.", true);
       return;
     } catch (err) {
@@ -490,7 +490,7 @@ async function refresh() {
   refreshing = true;
   const previous = state;
   try {
-    state = await api("/api/state");
+    state = await api("api/state");
     const dry = document.getElementById("dry-run");
     if (dry && document.activeElement !== dry) dry.checked = !!state.dry_run;
     paintStatus(previous);
@@ -528,7 +528,7 @@ function showShell() {
 
 document.getElementById("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const result = await post("/api/login", { password: document.getElementById("login-password").value });
+  const result = await post("api/login", { password: document.getElementById("login-password").value });
   if (!result.ok) {
     showLogin(result.error || "Could not sign in.");
     return;
@@ -538,7 +538,7 @@ document.getElementById("login-form").addEventListener("submit", async (event) =
 });
 
 document.getElementById("dry-run").addEventListener("change", async (event) => {
-  const result = await post("/api/settings", { dry_run: event.target.checked });
+  const result = await post("api/settings", { dry_run: event.target.checked });
   if (result.settings) settings = result.settings;
   await refresh();
 });
@@ -549,7 +549,7 @@ document.getElementById("more-btn").addEventListener("click", () => {
 });
 
 document.getElementById("logout").addEventListener("click", async () => {
-  await post("/api/logout", {});
+  await post("api/logout", {});
   showLogin();
 });
 
@@ -562,17 +562,17 @@ document.getElementById("sheet").querySelectorAll("a").forEach((link) => {
 window.addEventListener("hashchange", route);
 
 async function boot() {
-  const session = await api("/api/session");
+  const session = await api("api/session");
   if (session.auth_required && !session.authenticated) {
     showLogin();
     return;
   }
   showShell();
-  settings = (await api("/api/settings")).settings;
+  settings = (await api("api/settings")).settings;
   await refresh();
   route();
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker.register("sw.js").catch(() => {});
   }
 }
 
