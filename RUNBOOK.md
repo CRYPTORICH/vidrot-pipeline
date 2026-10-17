@@ -1,148 +1,173 @@
-# vidrot.ai runbook
+# vidrot.ai — install and daily use
 
-How the pipeline works, how to run it, and what was broken.
+This is the app that replaces the 9:00 and 12:00 Windows scheduled tasks. It runs on the same PC, uses the same Veo call Ralph's scripts used, and does not pop a console window.
 
-The daily job does **not** make video and it does **not** post to Instagram by itself. It pulls live Google Trends, writes five surreal "interdimensional cable" channel prompts, and commits that batch to this repo. You generate the clips (Veo or similar) and post them with `post_instagram.py`.
+## Install on Windows
 
-## Why it was dead
+1. Install **Python 3.11** from [python.org](https://www.python.org/downloads/windows/). On the first installer page, leave the **py launcher** enabled. The shortcut tries `pyw -3.11`, then any windowless Python.
+2. Install **ffmpeg** and make sure `ffmpeg` works in a terminal. [gyan.dev builds](https://www.gyan.dev/ffmpeg/builds/) are fine. If you would rather not put it on PATH, set the full path on the Settings page later (`C:\ffmpeg\bin\ffmpeg.exe` or wherever it landed).
+3. In a terminal, once:
 
-Every GitHub Actions run failed, starting with the first one on 2026-06-17 (`27689212533`) through the last one on 2026-08-17 (`32036055230`). The generate step succeeded. The next step, "Commit generated prompts", exited 1.
-
-`prompts/` and `output/` were listed in `.gitignore`, and the workflow ran `git add prompts/ output/ config/trending_cache.json`. Git exits 1 when you add an ignored path, and the shell stops there. Nothing was ever committed, so the repo's last real push stayed 2026-06-17.
-
-Two more problems were waiting behind that one:
-
-- The workflow token was read-only (`contents: read` in the run logs). A successful `git add` would still have died on `git push`.
-- The push trigger included `config/**`. The job rewrites `config/trending_cache.json`, so a green run would have started another run, forever.
-
-On 2026-08-17 GitHub set the workflow to `disabled_inactivity`. This is a public repo, and GitHub turns scheduled workflows off after 60 days with no commits, issues, or pull requests. Scheduled runs do not count as activity. The last push was 2026-06-17, which is why the schedule went quiet right after the 2026-08-17 run and nothing has fired since.
-
-The Instagram job did not cause these failures. It was hardcoded `if: false`, so it was skipped every time. The poster also had bugs that would have shown up the first time someone turned it on: `clip_upload` returns a Media object, and the script called `.get()` on it as if it were a dict. It also invented a new phone fingerprint on every launch, which is the opposite of what a saved Instagram session needs.
-
-Google Trends itself is fine. The RSS feed still returns titles, and the August logs show the scrape succeeding.
-
-## What each file does
-
-| File | Role |
-| --- | --- |
-| `pipeline.py` | Runs the batch: trends, then prompts, then caption and instruction files. |
-| `trending.py` | Reads Google Trends RSS (`https://trends.google.com/trending/rss?geo=US`). No API key. |
-| `prompt_generator.py` | Mixes each trend with the word banks in `config/channels.json`. |
-| `config/channels.json` | The "sauce": characters, settings, styles, bumpers. Edit this to change the voice. |
-| `config/trending_cache.json` | Last successful trend list. Used when Google is down. A failed fetch does not wipe it. |
-| `post_instagram.py` | Uploads mp4 Reels with instagrapi. Not used by the daily schedule. |
-| `scripts/commit_batch.sh` | What Actions runs after a batch. Commits prompts and caption text, never video. |
-| `.github/workflows/daily-pipeline.yml` | Tests, then the daily batch. Instagram only if you opt in by hand. |
-| `prompts/` | One JSON file per batch. This directory is committed. |
-| `output/generate_instructions.txt` | The prompts, seeds, and exact mp4 filenames to render. |
-| `output/captions_batch_*.json` | Captions keyed by those filenames. Committed. The mp4s are not. |
-
-## Environment variables and secrets
-
-Prompt generation needs no secrets. These are only for posting.
-
-| Name | Required | Where to get it |
-| --- | --- | --- |
-| `IG_USERNAME` | For posting | The Instagram handle. The account in the README is `vidrot.ai`. |
-| `IG_PASSWORD` | One of the login methods | The Instagram password for that account. Store it in `.env` locally, or as a GitHub Actions secret. Do not commit it. |
-| `IG_SESSION_FILE` | Best login method | Path to a `session.json` written by a successful `python post_instagram.py --dry-run` on your own machine. |
-| `IG_SESSION_JSON` | Alternative to the file | The contents of that same `session.json`, as one JSON blob. This is the value to put in a GitHub secret if a hosted runner must post. |
-| `IG_SESSIONID` | Alternative | The `sessionid` cookie from a browser logged in as the account. Weaker than the full session file. |
-| `IG_VERIFICATION_CODE` | Only for 2FA password logins | The current 6-digit code from the authenticator app. Not needed when a saved session still works. |
-| `IG_POST_DELAY_MIN` / `IG_POST_DELAY_MAX` | No | Seconds between clips in one batch. Defaults: 300 and 900. |
-| `TRENDS_GEO` | No | Google Trends country code. Default `US`. |
-| `VIDROT_BASE` | No | Write prompts and captions into another directory instead of the repo. |
-
-Session files are also picked up with no variable set, in this order:
-
-1. `IG_SESSION_FILE`
-2. `~/.openclaw/instagram_sessions/session.json` (the path this repo already looked in)
-3. `config/session.json` inside the repo (gitignored)
-
-Copy `.env.example` to `.env` for local use. The scripts do not load `.env` on their own:
-
-```bash
-set -a && source .env && set +a
-```
-
-GitHub Actions secrets, if you later post from a runner: repo → Settings → Secrets and variables → Actions → New repository secret. Names must match the table (`IG_USERNAME`, `IG_PASSWORD`, `IG_SESSION_JSON`, `IG_SESSIONID`, `IG_VERIFICATION_CODE`). This runbook's author could not list the existing secrets (the API returned 403), so treat them as unset until you check that page yourself.
-
-There is no key for trends, and no key in this repo for video models. Rendering happens in whatever tool you already use.
-
-## Run it locally
-
-Python 3.12 is what Actions uses. The prompt scripts use the standard library only.
-
-```bash
-git clone https://github.com/CRYPTORICH/vidrot-pipeline.git
-cd vidrot-pipeline
-
-# Print a batch, write nothing
-python pipeline.py --dry-run --count 3
-
-# Write prompts/ and output/ in a scratch directory
-VIDROT_BASE=/tmp/vidrot python pipeline.py --count 5
-
-# Same thing, into this repo (this is what Actions does)
-python pipeline.py --cron --count 5
-
-# Tests, no network and no Instagram account
-python -m unittest discover -s tests -v
-
-# See whether posting is configured, without logging in
-python post_instagram.py --check
-```
-
-After a real run, open `output/generate_instructions.txt`. Make one vertical mp4 per clip and save it under `output/` with the filename in that file (for example `output/000_SOME_TREND_42.mp4`).
-
-Post from your own machine, not from a fresh datacenter IP, once `IG_PASSWORD` or a session file is set:
-
-```bash
+```bat
+cd C:\Users\dejes\Desktop\vidrot_pipeline
 pip install -r requirements.txt
-python post_instagram.py --dry-run
-python post_instagram.py --batch output/ --caption-file output/captions_batch_YYYYMMDD_HHMMSS.json
 ```
 
-`--dry-run` logs in and saves `config/session.json` (or `IG_SESSION_FILE` if you set it). The next run reuses that file so Instagram sees the same device. A password login that hits a challenge or 2FA has to be approved by you; the script prints which case it is. Copy the saved `session.json` somewhere safe. Anyone with that file is logged in as the account.
+Use the folder where this repo actually lives. `instagrapi` is only needed when you post. Prompt generation and dry-run previews use the standard library plus ffmpeg.
 
-`python pipeline.py --post` uploads whatever mp4s are already in `output/` after it writes the new batch. With no mp4s it just tells you that and exits 0.
+4. Right-click `windows\Start Vidrot.vbs` → **Create shortcut**, and put that shortcut on the desktop. Do not copy the `.vbs` file itself. A copy loses the path back to `console\server.py`.
 
-## Run it in Actions
+## Start and stop
 
-Workflow file: `.github/workflows/daily-pipeline.yml`.
+Double-click the shortcut. The browser opens `http://127.0.0.1:8765/`. There is no terminal window. Closing the browser does **not** stop the app, which is what lets the scheduler keep running.
 
-- **Pull requests:** unit tests only.
-- **Push to `main`** that touches the pipeline, the word bank, or this workflow: tests, then a batch, then a commit.
-- **Schedule:** `0 13 * * 1-6` (13:00 UTC, Monday–Saturday). Same batch and commit. No Instagram.
-- **Run workflow button:** same batch. Set "post to instagram" only if this runner already has mp4s in `output/` and the IG secrets exist. It usually should stay off, because clips are produced on your machine and mp4s are gitignored.
+To stop it, double-click `windows\Stop Vidrot.vbs`. That sends a shutdown to the local page. It also has no console window.
 
-The commit step runs `scripts/commit_batch.sh`. It commits:
+A second double-click of Start, while the app is already running, only opens the browser again.
 
-- `prompts/`
-- `config/trending_cache.json`
-- `output/*.json`, `output/*.txt`, `output/*.md`
+Dry run is **on** the first time you open it. Leave it on until a batch, a preview reel, and a dry-run "post" all look right. Dry run does not call Google and does not upload.
 
-It does not commit mp4s or `config/session.json`. The commit message includes `[skip ci]` so the bot push does not start the workflow again. The token has `contents: write`, which is what makes `git push` legal.
+## First-time setup
 
-## Turn the schedule back on
+Open **Settings**. Everything on that page is saved under:
 
-Merging this pull request does **not** re-enable a workflow GitHub disabled for inactivity. After the merge:
+```
+%LOCALAPPDATA%\vidrot\settings.json
+```
 
-1. Open <https://github.com/CRYPTORICH/vidrot-pipeline/actions>.
-2. Click **vidrot.ai Daily Pipeline** in the left sidebar.
-3. If the yellow banner says the workflow is disabled, click **Enable workflow**.
-4. Click **Run workflow** → branch `main` → leave "post to instagram" unchecked → **Run workflow**.
-5. Confirm the run is green and that it pushed a commit named `Daily prompt batch ...`.
+That folder is outside the git repo. Do not copy `settings.json` or `session.json` into the repo.
 
-The schedule then runs at 13:00 UTC the next Monday–Saturday. A disabled workflow does not catch up on missed days.
+### Veo
 
-To turn the schedule off later, open the same page and click the `...` menu → **Disable workflow**.
+Clips are generated the way `generate_veo_batch.py` and `generate_more_veo.py` did it, not through the OpenClaw gateway:
+
+- `POST https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning?key=…`
+- body: `instances[0].prompt`, `parameters.aspectRatio = 9:16`, `parameters.durationSeconds` of 4, 6, or 8
+- poll the long-running operation, then download `generatedSamples[0].video.uri`
+
+The key is the same **Gemini API key** that used to live in `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Create or copy it at [aistudio.google.com](https://aistudio.google.com/apikey) and paste it into Settings. A blank field does not erase a key you already saved.
+
+**Health → Test Veo key** is the only button that talks to Google for a status check. The health panel itself only looks at whether a key is saved, so refreshing the page does not spend quota.
+
+Ralph (OpenClaw) was the agent that *ran* those scripts. The scripts themselves called Google. The console does that call directly. OpenClaw can stay running on `http://127.0.0.1:18790`; Health reports whether that port answers. It is not required to make a clip.
+
+The one-off repairs in `check_veo_auth.py` and `fix_veo.py` patched a broken `@google/genai` install inside OpenClaw's `node_modules`. Those are not part of this app.
+
+### Instagram
+
+Two ways, in the order the poster tries them:
+
+1. Copy an existing session file to `%LOCALAPPDATA%\vidrot\session.json`. The old tools looked in `C:\Users\dejes\.openclaw\instagram_sessions\session.json` and in `config\session.json`.
+2. Or type the Instagram username and password on Settings and use **Health → Test Instagram login** (or just post). The first successful login writes `session.json`. Later posts reuse it and do not send the password again.
+
+If Instagram wants a checkpoint or a 6-digit code, the Post page says so and has a code field. It does not call `input()`, which is what used to hang a hidden window. Approve the prompt on the phone, or type the current authenticator code, and try the post again.
+
+Health never logs in by itself. It only checks that a session file or a password is present.
+
+### OpenClaw
+
+Leave the gateway on port 18790 if you still use Ralph for other work. Point Settings at a different URL only if you moved it. The morning job does not call the gateway.
+
+## A normal day, by hand
+
+| Page | What it does |
+| --- | --- |
+| Today | New batch reads Google Trends (RSS, no key) and writes five channels from the same word banks as the desktop `prompt_generator.py`. Render clips, then Stitch and brand. |
+| Prompts | Edit the Veo prompt and the caption, then Save. Regenerate replaces one channel. |
+| Clips | One card per job: waiting, rendering, ready, or the error text. |
+| Reel | Plays the stitched 1080×1920 file. |
+| Post | Caption, optional authenticator code, then Post now. History is the list of what was posted (or dry-run saved). |
+| Schedule | Two toggles and two times. See below. |
+| Health | Veo key, Instagram session, OpenClaw, ffmpeg, free disk, how many clips and reels are on disk, last run. |
+| Logs | The same lines the morning job writes, in `%LOCALAPPDATA%\vidrot\logs\console.log`. |
+
+Branding re-encodes each clip to 1080×1920 before joining. The old `pipeline.py` concat of mismatched files is what used to fail. If you drop a bumper mp4 into `%LOCALAPPDATA%\vidrot\bumpers\`, it is placed first. Otherwise the reel starts on the first clip. The watermark text is `VIDROT` plus the channel name.
+
+A failed Veo submit is retried three times. The error stays on that clip's card. One bad clip does not throw away the ones that succeeded.
+
+## Scheduler (replaces the two tasks)
+
+On **Schedule**:
+
+- **Morning batch** defaults to 09:00. It pulls trends, renders, and brands. It does not post.
+- **Midday post** defaults to 12:00. It posts the reel from the morning job if that reel is still waiting.
+- Days default to Monday–Saturday. Sunday is off, matching the old habit.
+- Each job fires once per day, and only if the app is open within 10 minutes after the chosen time.
+
+Both toggles start **off**. Turn them on after a dry run looks right, then turn Dry run off when you want real Veo clips and a real upload.
+
+The app has to be running. Windows does not start it at logon unless you add the Start shortcut to the Startup folder yourself (`shell:startup`). That shortcut is still windowless.
+
+## Leave the old scheduled tasks
+
+Both tasks were already disabled on 2026-06-17 because they flashed a console ("blue box"). Confirm they stay gone:
+
+1. Open **Task Scheduler**.
+2. Find `\vidrot_pipeline` (daily 09:00, `run_daily.ps1`) and `\vidrot_12pm_post` (one-shot 12:00, `auto_poster.py` pointed at `C:\Users\dejes\.openclaw\media\vidrot_trending_v1.mp4`, which no longer exists).
+3. Disable them if they are enabled, or delete them.
+
+Do not re-enable `run_daily.ps1` or `auto_poster.py`. The console is the replacement. The 12:00 task could not succeed anyway: it posted one hardcoded file that is gone.
+
+## What was dropped
+
+Kept, because it was the working loop: trend text, the channel word banks, the Gemini Veo REST call, ffmpeg branding, instagrapi with a saved session.
+
+Not carried over:
+
+- Money Mitch / Blender experiments
+- `vypr_*` audio experiments
+- `tiktok_upload.py`
+- `check_veo_auth.py` and `fix_veo.py` (node_modules repairs)
+- Buffer, getimg, and Upload-Post keys from the old `.env`
+- The hardcoded 12:00 mp4 path
+
+`pipeline.py` and `post_instagram.py` are still in the repo if you want a terminal batch. The console does not need them.
+
+## Data on disk
+
+| Path | Contents |
+| --- | --- |
+| `%LOCALAPPDATA%\vidrot\settings.json` | Key, password, schedule, dry-run flag |
+| `%LOCALAPPDATA%\vidrot\session.json` | Instagram session after a successful login |
+| `%LOCALAPPDATA%\vidrot\clips\` | Per-prompt mp4s |
+| `%LOCALAPPDATA%\vidrot\reels\` | Stitched reels |
+| `%LOCALAPPDATA%\vidrot\posters\` | Preview frames |
+| `%LOCALAPPDATA%\vidrot\history.json` | What was posted |
+| `%LOCALAPPDATA%\vidrot\logs\console.log` | Readable log |
+| `%LOCALAPPDATA%\vidrot\bumpers\` | Optional intro mp4 |
+
+On Linux or macOS the same tree is `~/.vidrot`, or whatever `VIDROT_DATA` points at.
+
+## Tests and dry run
+
+```bat
+python -m unittest discover -s tests -v
+```
+
+The tests mock Veo and Instagram. They do not need a key. Dry run in the app is the same idea with real ffmpeg title cards, so you can watch the whole loop before spending quota.
+
+## GitHub Actions
+
+`.github/workflows/daily-pipeline.yml` runs the unit tests on pull requests and on pushes to `main`. It has no schedule and it does not commit prompts. A hosted runner is the wrong place for the Veo key, ffmpeg bumpers, and the Instagram session.
+
+### Why the old daily job died
+
+Every Actions run failed from the first one on 2026-06-17 (`27689212533`) through the last one on 2026-08-17 (`32036055230`). Prompt generation succeeded. The next step, "Commit generated prompts", exited 1.
+
+`prompts/` and `output/` were in `.gitignore`, and the workflow ran `git add` on those paths. Git exits 1 when you add an ignored path. Nothing was committed, so the last real push stayed 2026-06-17.
+
+Two more problems were behind that one. The workflow token was `contents: read`, so a push would have failed next. The push trigger included `config/**` while the job rewrote `config/trending_cache.json`, which would have started another run forever.
+
+On 2026-08-17 GitHub set the workflow to `disabled_inactivity`. Scheduled runs do not count as activity, and this public repo had gone 60 days without a commit. The Instagram step did not cause the failures: it was hardcoded off. The poster also treated `clip_upload`'s Media object like a dict, and it invented a new device id on every launch. Both of those are fixed in `post_instagram.py` for the terminal tool, and the console uses the same session-file approach.
+
+Do not re-enable that cron. The console is the daily driver. Merging this pull request does not turn the old schedule back on, and it should stay off.
 
 ## What only the owner can do
 
-1. **Merge the pull request.** The fixes are not on `main` until then, and the scheduled workflow that is still disabled is the old one.
-2. **Enable the workflow** using the clicks above. The state on 2026-10-17 was `disabled_inactivity`. A code push does not clear that flag.
-3. **Run the workflow once by hand** so you do not wait until the next 13:00 UTC to see if the commit lands.
-4. **Instagram login, if you still want posting.** Check Settings → Secrets and variables → Actions. If `IG_USERNAME` and `IG_PASSWORD` are missing, add them. Better: on your own computer run `python post_instagram.py --dry-run` while those two are set, approve any Instagram challenge or 2FA prompt, and keep the `session.json` it writes. Password login from a GitHub-hosted runner is the path that gets checkpointed. This repo cannot finish that prompt for you.
-5. **Render the clips.** Nothing in this repo calls Veo or any other video API. The daily job's output is the instruction file. Posting does nothing until those mp4s exist.
-6. **Branch protection, only if the first green run fails on `git push`.** If `main` requires a pull request or a signed commit, the bot push will be rejected. Allow `github-actions[bot]` to push to `main`, or turn that rule off for this repo. The API used here could not read branch protection (403), so this is a "only if the push is rejected" item, not a confirmed block.
+1. Install Python 3.11 (with the py launcher) and ffmpeg on the Windows PC, then `pip install -r requirements.txt` in this repo.
+2. Put a **shortcut** to `windows\Start Vidrot.vbs` on the desktop, and optionally in the Startup folder if the scheduler should survive a reboot.
+3. In Task Scheduler, confirm `\vidrot_pipeline` and `\vidrot_12pm_post` are disabled or deleted.
+4. Paste the Gemini API key (the old `GEMINI_API_KEY`, from [aistudio.google.com](https://aistudio.google.com/apikey)) into Settings, then use Health → Test Veo key.
+5. Instagram: copy the old `session.json` into `%LOCALAPPDATA%\vidrot\session.json`, or enter the password once and approve whatever checkpoint the phone shows. This app cannot finish that prompt for you.
+6. Run one dry-run batch and watch the reel. Then turn Dry run off, render one real clip so you know the key still works, and only then turn the two schedule toggles on.
+7. Merge the pull request when the console is the one you want on the machine. The GitHub cron should stay disabled.

@@ -1,46 +1,16 @@
-name: vidrot.ai Daily Pipeline
+name: vidrot tests
 
+# The daily loop runs in the local console (Vidrot.pyw), not on GitHub.
+# A hosted runner cannot reach the owner's Veo key, ffmpeg bumpers, or
+# Instagram session, and the old cron was what GitHub disabled for inactivity.
 on:
-  schedule:
-    # 13:00 UTC every Monday–Saturday.
-    # That is 9:00 AM US Eastern during daylight time, and 8:00 AM during standard time.
-    - cron: "0 13 * * 1-6"
-  workflow_dispatch:
-    inputs:
-      count:
-        description: "How many channel prompts to generate"
-        required: false
-        default: "5"
-      post_to_instagram:
-        description: "Also try to upload mp4s already in output/. Needs IG secrets. Clips are not generated here."
-        type: boolean
-        required: false
-        default: false
+  pull_request:
   push:
     branches: [main]
-    paths:
-      # Do not include config/trending_cache.json. The job commits that file,
-      # and a config/** filter would schedule another run forever.
-      - "pipeline.py"
-      - "prompt_generator.py"
-      - "trending.py"
-      - "post_instagram.py"
-      - "paths.py"
-      - "config/channels.json"
-      - "requirements.txt"
-      - "scripts/**"
-      - "tests/**"
-      - ".github/workflows/daily-pipeline.yml"
-  pull_request:
+  workflow_dispatch:
 
-# The commit step pushes the batch back to the branch. Without this, the
-# default token is read-only and the push is rejected.
 permissions:
-  contents: write
-
-concurrency:
-  group: vidrot-pipeline-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   test:
@@ -56,60 +26,3 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
-
-  generate-prompts:
-    needs: test
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Run pipeline
-        env:
-          PROMPT_COUNT: ${{ github.event.inputs.count || '5' }}
-        run: python pipeline.py --cron --count "$PROMPT_COUNT"
-
-      - name: Commit generated prompts
-        run: bash scripts/commit_batch.sh
-
-  post-instagram:
-    needs: generate-prompts
-    # Off for the schedule on purpose. This repo generates prompts, not video.
-    # A hosted runner has no mp4s, and a password login from a GitHub IP usually
-    # gets an Instagram challenge. Turn this on from the Actions "Run workflow"
-    # button only when output/ already contains clips and the IG secrets exist.
-    if: github.event_name == 'workflow_dispatch' && inputs.post_to_instagram
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Post to Instagram
-        env:
-          IG_USERNAME: ${{ secrets.IG_USERNAME }}
-          IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
-          IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
-          IG_SESSIONID: ${{ secrets.IG_SESSIONID }}
-          IG_VERIFICATION_CODE: ${{ secrets.IG_VERIFICATION_CODE }}
-        run: |
-          python post_instagram.py --check
-          latest="$(ls output/captions_*.json 2>/dev/null | sort -r | head -1 || true)"
-          if [ -z "$latest" ]; then
-            echo "No caption file in output/ — nothing to post."
-            exit 0
-          fi
-          python post_instagram.py --batch output/ --caption-file "$latest"

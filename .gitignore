@@ -1,3 +1,6 @@
+# Local console data. Settings and the Instagram session live here.
+.vidrot/
+
 # Secrets. Session JSON is a live Instagram login — never commit it.
 .env
 config/session.json

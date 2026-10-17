@@ -124,23 +124,16 @@ class WorkflowFileTests(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
 
-    def test_token_can_push(self):
-        self.assertIn("contents: write", self.text)
-
-    def test_schedule_is_still_weekdays_at_13_utc(self):
-        self.assertIn('cron: "0 13 * * 1-6"', self.text)
-
-    def test_instagram_job_is_not_hard_disabled(self):
+    def test_schedule_moved_off_github(self):
+        self.assertNotIn("cron:", self.text)
+        self.assertIn("local console", self.text)
         self.assertNotIn("if: false", self.text)
-        self.assertIn("inputs.post_to_instagram", self.text)
-
-    def test_trend_cache_commit_cannot_retrigger_the_workflow(self):
-        self.assertNotIn('- "config/**"', self.text)
-        self.assertNotIn("- 'config/**'", self.text)
-        self.assertIn("[skip ci]", COMMIT.read_text())
 
     def test_tests_run_in_actions(self):
         self.assertIn("python -m unittest discover -s tests -v", self.text)
+
+    def test_commit_script_still_skips_ci(self):
+        self.assertIn("[skip ci]", COMMIT.read_text())
 
 
 if __name__ == "__main__":

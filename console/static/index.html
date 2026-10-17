@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vidrot.ai console</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="mark">vidrot<span>.ai</span></div>
+      <p class="tag">interdimensional cable</p>
+      <nav id="nav">
+        <a href="#today" data-view="today">Today</a>
+        <a href="#prompts" data-view="prompts">Prompts</a>
+        <a href="#clips" data-view="clips">Clips</a>
+        <a href="#reel" data-view="reel">Reel</a>
+        <a href="#post" data-view="post">Post</a>
+        <a href="#schedule" data-view="schedule">Schedule</a>
+        <a href="#health" data-view="health">Health</a>
+        <a href="#settings" data-view="settings">Settings</a>
+        <a href="#logs" data-view="logs">Logs</a>
+      </nav>
+      <div class="aside-foot" id="aside-status">Starting…</div>
+    </aside>
+    <main>
+      <header>
+        <div>
+          <h1 id="title">Today</h1>
+          <p id="subtitle"></p>
+        </div>
+        <label class="dry" title="Dry run writes previews and does not call Veo or Instagram">
+          <input type="checkbox" id="dry-run">
+          <span>Dry run</span>
+        </label>
+      </header>
+      <div id="banner" class="banner" hidden></div>
+      <div id="view"></div>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
