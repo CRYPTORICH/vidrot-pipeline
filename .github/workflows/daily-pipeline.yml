@@ -1,8 +1,8 @@
 name: vidrot tests
 
-# The daily loop runs in the local console (Vidrot.pyw), not on GitHub.
-# A hosted runner cannot reach the owner's Veo key, ffmpeg bumpers, or
-# Instagram session, and the old cron was what GitHub disabled for inactivity.
+# The daily loop runs on the owner's Fly.io app, not on GitHub.
+# Actions only runs the unit tests. A hosted runner has no Veo key,
+# ffmpeg volume, or Instagram session.
 on:
   pull_request:
   push:
@@ -23,6 +23,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install "cryptography>=42,<50"
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v

@@ -10,11 +10,13 @@ from datetime import datetime
 from pathlib import Path
 
 from console.server import serve
+from vidrot.auth import Auth
 from vidrot.brand import ffmpeg_text, normalize_command
 from vidrot.engine import Engine
-from vidrot.instagram import classify, permalink
+from vidrot import health
+from vidrot.instagram import classify, import_session, login, permalink
 from vidrot.prompts import apply_edits, generate_batch
-from vidrot.scheduler import is_due, next_fire
+from vidrot.scheduler import Scheduler, is_due, next_fire
 from vidrot.settings import load, public_view, save
 from vidrot.veo import download_url, operation_url, parse_operation, parse_submit, submit_url
 
@@ -137,6 +139,14 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(len(engine.public_history()), 1)
             self.assertTrue((Path(tmp) / "reels" / f"{snap['id']}.mp4").exists())
 
+    def test_run_reloads_from_the_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = make_engine(tmp)
+            created = engine.new_batch()
+            again = make_engine(tmp)
+            self.assertEqual(again.snapshot()["id"], created["run"]["id"])
+            self.assertEqual(again.snapshot()["phase"], "review")
+
     def test_regenerate_returns_without_deadlock(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine = make_engine(tmp)
@@ -194,6 +204,43 @@ class SchedulerTests(unittest.TestCase):
         nxt = next_fire(datetime(2026, 10, 19, 10, 0), "09:00", True, [0])
         self.assertTrue(nxt.startswith("2026-10-26T09:00"))
 
+    def test_tick_fires_each_job_once(self):
+        class ClockEngine:
+            def __init__(self, folder):
+                self.folder = Path(folder)
+                self.calls = []
+
+            def settings(self):
+                return {
+                    "timezone": "UTC",
+                    "schedule": {
+                        "batch_enabled": True,
+                        "batch_time": "09:00",
+                        "post_enabled": True,
+                        "post_time": "12:00",
+                        "weekdays": [0],
+                    },
+                }
+
+            def run_morning(self):
+                self.calls.append("morning")
+
+            def post_latest(self):
+                self.calls.append("post")
+
+            def log(self, message):
+                return message
+
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = ClockEngine(tmp)
+            scheduler = Scheduler(engine)
+            monday_morning = datetime(2026, 10, 19, 9, 4)
+            self.assertTrue(scheduler.tick(monday_morning))
+            self.assertFalse(scheduler.tick(datetime(2026, 10, 19, 9, 8)))
+            self.assertTrue(scheduler.tick(datetime(2026, 10, 19, 12, 2)))
+            self.assertEqual(engine.calls, ["morning", "post"])
+            self.assertEqual(scheduler.summary(datetime(2026, 10, 19, 13, 0))["last_batch_date"], "2026-10-19")
+
 
 class SettingsTests(unittest.TestCase):
     def test_secrets_stay_in_the_data_dir(self):
@@ -201,18 +248,21 @@ class SettingsTests(unittest.TestCase):
             folder = Path(tmp)
             view, error = save({
                 "gemini_api_key": "super-secret-key",
-                "ig_password": "pw",
+                "ig_password": "instagram-password-zz",
                 "dry_run": False,
             }, folder)
             self.assertEqual(error, "")
             self.assertNotIn("super-secret-key", json.dumps(view))
-            self.assertNotIn("pw", json.dumps(view))
+            self.assertNotIn("instagram-password-zz", json.dumps(view))
             self.assertTrue(view["gemini_api_key_set"])
-            stored = json.loads((folder / "settings.json").read_text())
-            self.assertEqual(stored["gemini_api_key"], "super-secret-key")
+            from vidrot.db import get_kv
+            stored = get_kv(folder, "settings", "")
+            self.assertNotIn("super-secret-key", stored)
+            self.assertNotIn("instagram-password-zz", stored)
+            self.assertIn("enc:v1:", stored)
+            self.assertEqual(load(folder)["gemini_api_key"], "super-secret-key")
             again, _ = save({"gemini_api_key": ""}, folder)
             self.assertTrue(again["gemini_api_key_set"])
-            self.assertNotIn(str(folder), "")  # data dir is the temp dir, not the repo
             self.assertFalse(str(Path(__file__).resolve().parents[1]) in str(folder))
             public = public_view(load(folder), folder)
             self.assertNotIn("super-secret-key", json.dumps(public))
@@ -266,7 +316,9 @@ class ApiTests(unittest.TestCase):
 
             page = urllib.request.urlopen(base + "/", timeout=5)
             self.assertEqual(page.status, 200)
-            self.assertIn(b"vidrot.ai", page.read())
+            page_bytes = page.read()
+            self.assertIn(b"vidrot", page_bytes)
+            self.assertIn(b"Sign in", page_bytes)
             created = call("POST", "/api/batch", {})
             self.assertTrue(created["ok"])
             saved = call("POST", "/api/prompts", {"prompts": [{"id": "p1", "prompt": "edited prompt", "caption": "cap"}]})
@@ -299,6 +351,179 @@ class ApiTests(unittest.TestCase):
             self.assertNotIn("super-secret-key", json.dumps(view))
             fetched = call("GET", "/api/settings")
             self.assertNotIn("super-secret-key", json.dumps(fetched))
+
+
+class AuthTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+        os.environ["VIDROT_DISABLE_SCHEDULER"] = "1"
+        self.engine = make_engine(self.folder)
+        self.auth = Auth("correct-horse-battery", self.folder, secure=True)
+        self.httpd = serve(0, engine=self.engine, auth=self.auth)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.cookie = ""
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, cookie=True):
+        data = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(self.base + path, data=data, method=method)
+        req.add_header("X-Vidrot-Request", "1")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        if cookie and self.cookie:
+            req.add_header("Cookie", self.cookie)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self._take_cookie(resp.headers)
+                return resp.status, json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            self._take_cookie(exc.headers)
+            raw = exc.read().decode() or "{}"
+            return exc.code, json.loads(raw)
+
+    def _take_cookie(self, headers):
+        set_cookie = headers.get("Set-Cookie") or ""
+        if "vidrot_session=" in set_cookie:
+            self.cookie = set_cookie.split(";", 1)[0]
+
+    def test_login_session_and_lockout(self):
+        code, session = self.call("GET", "/api/session", cookie=False)
+        self.assertEqual(code, 200)
+        self.assertTrue(session["auth_required"])
+        self.assertFalse(session["authenticated"])
+        code, denied = self.call("GET", "/api/state", cookie=False)
+        self.assertEqual(code, 401)
+        code, media = self.call("GET", "/media/clips/nope.mp4", cookie=False)
+        self.assertEqual(code, 401)
+        code, bad = self.call("POST", "/api/login", {"password": "nope"}, cookie=False)
+        self.assertEqual(code, 401)
+        self.assertNotIn("correct-horse", json.dumps(bad))
+        code, good = self.call("POST", "/api/login", {"password": "correct-horse-battery"}, cookie=False)
+        self.assertEqual(code, 200)
+        # Re-read the cookie flags from a fresh login response.
+        req = urllib.request.Request(
+            self.base + "/api/login",
+            data=json.dumps({"password": "correct-horse-battery"}).encode(),
+            method="POST",
+        )
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            set_cookie = resp.headers.get("Set-Cookie")
+        self.assertIn("HttpOnly", set_cookie)
+        self.assertIn("SameSite=Lax", set_cookie)
+        self.assertIn("Secure", set_cookie)
+        code, state = self.call("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertTrue(state["ok"])
+        bare = urllib.request.Request(
+            self.base + "/api/batch",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json", "Cookie": self.cookie},
+        )
+        try:
+            urllib.request.urlopen(bare, timeout=5)
+            self.fail("a cookie alone should not authorize a cross-site post")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 403)
+        code, _ = self.call("POST", "/api/logout", {})
+        self.assertEqual(code, 200)
+        code, after = self.call("GET", "/api/state")
+        self.assertEqual(code, 401)
+        self.assertFalse(after.get("ok"))
+
+    def test_lockout_after_repeated_failures(self):
+        for _ in range(8):
+            code, _ = self.call("POST", "/api/login", {"password": "wrong"}, cookie=False)
+            self.assertEqual(code, 401)
+        code, locked = self.call("POST", "/api/login", {"password": "correct-horse-battery"}, cookie=False)
+        self.assertEqual(code, 401)
+        self.assertIn("15 minutes", locked["error"])
+
+
+class InstagramSessionTests(unittest.TestCase):
+    def test_import_encrypts_and_proxy_is_applied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            imported = import_session(folder, {"uuids": {"phone_id": "abc"}, "cookies": {}})
+            self.assertTrue(imported["ok"])
+            from vidrot.db import get_kv
+            stored = get_kv(folder, "ig_session", "")
+            self.assertTrue(stored.startswith("enc:v1:"))
+            self.assertNotIn("phone_id", stored)
+            self.assertFalse(import_session(folder, {"hello": "nope"})["ok"])
+            seen = {}
+
+            class FakeClient:
+                def set_proxy(self, proxy):
+                    seen["proxy"] = proxy
+
+                def set_settings(self, settings):
+                    seen["settings"] = settings
+
+                def get_timeline_feed(self):
+                    return []
+
+                def get_settings(self):
+                    return {"uuids": {"phone_id": "abc"}}
+
+            result = login(
+                {"ig_username": "vidrot.ai", "ig_password": "", "ig_proxy": "http://127.0.0.1:9"},
+                folder,
+                client_factory=FakeClient,
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(seen["proxy"], "http://127.0.0.1:9")
+            self.assertEqual(seen["settings"]["uuids"]["phone_id"], "abc")
+
+
+class HealthAndDeployTests(unittest.TestCase):
+    def test_openclaw_stays_off_without_a_probe(self):
+        def boom(url, timeout=3):
+            raise AssertionError(f"probed {url}")
+
+        original = health._probe
+        health._probe = boom
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                card = health.collect(
+                    {
+                        "gemini_api_key": "",
+                        "veo_model": "veo-3.1-fast-generate-preview",
+                        "veo_duration_seconds": 8,
+                        "ig_username": "vidrot.ai",
+                        "ig_password": "",
+                        "openclaw_enabled": False,
+                        "ffmpeg_path": "",
+                    },
+                    Path(tmp),
+                    veo_check=False,
+                )
+        finally:
+            health._probe = original
+        self.assertTrue(card["openclaw"]["ok"])
+        self.assertIn("Off", card["openclaw"]["detail"])
+
+    def test_phone_app_files(self):
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((root / "console" / "static" / "manifest.webmanifest").read_text())
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertTrue((root / "console" / "static" / "sw.js").read_text().startswith("const CACHE"))
+        self.assertTrue((root / "console" / "static" / "icons" / "icon-192.png").exists())
+        self.assertTrue((root / "console" / "static" / "icons" / "icon-512.png").exists())
+        docker = (root / "Dockerfile").read_text()
+        self.assertIn("ffmpeg", docker)
+        self.assertIn("VIDROT_DATA=/data", docker)
+        fly = (root / "fly.toml").read_text()
+        self.assertIn('auto_stop_machines = "off"', fly)
+        self.assertIn("min_machines_running = 1", fly)
+        self.assertIn("/data", fly)
 
 
 class LauncherTests(unittest.TestCase):

@@ -41,8 +41,8 @@ def collect(settings, folder, run=None, veo_check=True):
             veo_card = {"ok": False, "detail": f"Could not reach Google: {exc}"}
 
     ig = describe_instagram(settings, folder)
-    if ig["session_file"]:
-        ig_detail = "A session file is saved. Health does not log in, so Instagram is not poked on every refresh."
+    if ig["session_saved"]:
+        ig_detail = "A session is saved on the server. Health does not log in, so Instagram is not poked on every refresh."
         ig_ok = True
     elif ig["password"]:
         ig_detail = "Password saved, no session file yet. The first post creates the session."
@@ -67,12 +67,17 @@ def collect(settings, folder, run=None, veo_check=True):
     except OSError as exc:
         disk = {"ok": False, "detail": str(exc)}
 
-    gateway = settings.get("openclaw_url") or "http://127.0.0.1:18790"
-    up, detail = _probe(gateway)
-    openclaw = {
-        "ok": up,
-        "detail": detail + " Clips are generated with the Gemini Veo call, the same one Ralph's script used. The gateway is monitored, not required.",
-    }
+    if settings.get("openclaw_enabled") and settings.get("openclaw_url"):
+        up, detail = _probe(settings["openclaw_url"])
+        openclaw = {
+            "ok": up,
+            "detail": detail + " Clips still use the Veo API. This check is optional.",
+        }
+    else:
+        openclaw = {
+            "ok": True,
+            "detail": "Off. The PC does not need to be on. Clips use the Veo API directly.",
+        }
 
     last = None
     if run:

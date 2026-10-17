@@ -10,8 +10,9 @@ from pathlib import Path
 
 from vidrot import brand, prompts as promptlib
 from vidrot.instagram import post_reel
+from vidrot import db as statedb
 from vidrot.settings import load as load_settings
-from vidrot.store import data_dir, now_iso, read_json, write_json, Logger
+from vidrot.store import data_dir, now_iso, write_json, Logger
 from vidrot.trends import collect_trends
 from vidrot.veo import VeoClient
 
@@ -41,8 +42,8 @@ class Engine:
         self.lock = threading.Lock()
         self._running = False
         self.logger = Logger(self.folder / "logs" / "console.log")
-        self.run = read_json(self.folder / "current_run.json", None)
-        self.history = read_json(self.folder / "history.json", {"posts": []})
+        self.run = statedb.load_run(self.folder)
+        self.history = statedb.load_history(self.folder)
         self._worker = None
 
     def settings(self):
@@ -63,7 +64,7 @@ class Engine:
         return line
 
     def _save_locked(self):
-        write_json(self.folder / "current_run.json", self.run)
+        statedb.save_run(self.folder, self.run)
 
     def snapshot(self):
         with self.lock:
@@ -237,6 +238,7 @@ class Engine:
             self.run["updated_at"] = now_iso()
             self._save_locked()
         self.log(f"{ready} clip(s) ready.")
+        self._ping("vidrot clips ready", f"{ready} clip(s) are ready to stitch.")
 
     def _veo_clip(self, veo, text, dest):
         submitted = {"ok": False, "error": "Veo was not called."}
@@ -339,6 +341,7 @@ class Engine:
             self.run["updated_at"] = now_iso()
             self._save_locked()
         self.log(f"Reel ready: {reel.name}")
+        self._ping("vidrot reel ready", "The reel is ready to preview.")
 
     def _bumper(self):
         bumpers = sorted((self.folder / "bumpers").glob("*.mp4"))
@@ -364,6 +367,7 @@ class Engine:
                 self.run["error"] = ""
                 self._save_locked()
             self.log("Dry run: nothing was sent to Instagram.")
+            self._ping("vidrot dry run", "Nothing was sent to Instagram.")
             return {"ok": True, "dry_run": True, "history": entry}
         video = self.folder / "reels" / run["reel"]
         text = caption.strip() or self._default_caption(run)
@@ -395,12 +399,14 @@ class Engine:
                 self.run["error"] = ""
                 self._save_locked()
             self.log(f"Posted {result.get('url') or run['reel']}")
+            self._ping("vidrot posted", result.get("url") or "The reel was posted.")
             return {"ok": True, "url": result.get("url") or ""}
         with self.lock:
             self.run["phase"] = "ready"
             self.run["error"] = result.get("error") or "Post failed"
             self._save_locked()
         self.log(self.run["error"])
+        self._ping("vidrot needs you", self.run["error"])
         return result
 
     def post_latest(self):
@@ -441,7 +447,7 @@ class Engine:
         with self.lock:
             self.history.setdefault("posts", []).append(entry)
             self.history["posts"] = self.history["posts"][-200:]
-            write_json(self.folder / "history.json", self.history)
+            statedb.save_history(self.folder, self.history)
         return entry
 
     def _set_prompt(self, index, **fields):
@@ -463,6 +469,14 @@ class Engine:
         with self.lock:
             self._fail_locked(message)
         self.log(message)
+        self._ping("vidrot failed", message)
+
+    def _ping(self, title, body):
+        try:
+            from vidrot.push import notify
+            notify(self.folder, title, body)
+        except Exception:
+            return
 
     def public_history(self):
         with self.lock:

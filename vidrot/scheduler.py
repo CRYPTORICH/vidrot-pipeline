@@ -1,8 +1,9 @@
-"""In-process clock. Replaces the Windows tasks that flashed a console window."""
+"""In-process clock. Runs inside the server, including when the phone is locked."""
 import threading
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from vidrot.store import read_json, write_json
+from vidrot import db as statedb
 
 
 def is_due(now, hhmm, enabled, weekdays, last_date, grace_minutes=10):
@@ -38,6 +39,15 @@ def next_fire(now, hhmm, enabled, weekdays):
     return None
 
 
+def wall_now(tzname):
+    """Naive wall time in the owner's zone. Schedule times are that clock."""
+    try:
+        zone = ZoneInfo(tzname or "UTC")
+    except Exception:
+        zone = ZoneInfo("UTC")
+    return datetime.now(zone).replace(tzinfo=None)
+
+
 class Scheduler:
     def __init__(self, engine, interval=15):
         self.engine = engine
@@ -45,15 +55,12 @@ class Scheduler:
         self.stop = threading.Event()
         self.thread = None
 
-    def state_path(self):
-        return self.engine.folder / "scheduler_state.json"
-
     def load_state(self):
-        return read_json(self.state_path(), {"last_batch_date": "", "last_post_date": ""})
+        return statedb.load_scheduler(self.engine.folder)
 
     def tick(self, now=None):
-        now = now or datetime.now()
         settings = self.engine.settings()
+        now = now or wall_now(settings.get("timezone"))
         sched = settings["schedule"]
         state = self.load_state()
         changed = False
@@ -65,7 +72,7 @@ class Scheduler:
             state.get("last_batch_date", ""),
         ):
             state["last_batch_date"] = now.date().isoformat()
-            write_json(self.state_path(), state)
+            statedb.save_scheduler(self.engine.folder, state)
             changed = True
             self.engine.run_morning()
             state = self.load_state()
@@ -77,14 +84,14 @@ class Scheduler:
             state.get("last_post_date", ""),
         ):
             state["last_post_date"] = now.date().isoformat()
-            write_json(self.state_path(), state)
+            statedb.save_scheduler(self.engine.folder, state)
             changed = True
             self.engine.post_latest()
         return changed
 
     def summary(self, now=None):
-        now = now or datetime.now()
         settings = self.engine.settings()
+        now = now or wall_now(settings.get("timezone"))
         sched = settings["schedule"]
         state = self.load_state()
         return {
@@ -97,6 +104,7 @@ class Scheduler:
             "last_post_date": state.get("last_post_date") or "",
             "next_batch": next_fire(now, sched["batch_time"], sched["batch_enabled"], sched["weekdays"]),
             "next_post": next_fire(now, sched["post_time"], sched["post_enabled"], sched["weekdays"]),
+            "timezone": settings.get("timezone") or "UTC",
             "running": bool(self.thread and self.thread.is_alive()),
         }
 

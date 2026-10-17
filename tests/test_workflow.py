@@ -126,7 +126,7 @@ class WorkflowFileTests(unittest.TestCase):
 
     def test_schedule_moved_off_github(self):
         self.assertNotIn("cron:", self.text)
-        self.assertIn("local console", self.text)
+        self.assertIn("Fly.io", self.text)
         self.assertNotIn("if: false", self.text)
 
     def test_tests_run_in_actions(self):

@@ -1,173 +1,150 @@
-# vidrot.ai — install and daily use
+# vidrot.ai on your phone
 
-This is the app that replaces the 9:00 and 12:00 Windows scheduled tasks. It runs on the same PC, uses the same Veo call Ralph's scripts used, and does not pop a console window.
+The console runs in the cloud. Your phone is the screen. The PC does not need to be on, and the morning job does not flash a window.
 
-## Install on Windows
+Clips are the same Gemini Veo call the old scripts used (`veo-3.1-fast-generate-preview`, vertical, 8 seconds). ffmpeg in the container stitches them. Instagram uses a session you import. OpenClaw is off unless you turn the check on.
 
-1. Install **Python 3.11** from [python.org](https://www.python.org/downloads/windows/). On the first installer page, leave the **py launcher** enabled. The shortcut tries `pyw -3.11`, then any windowless Python.
-2. Install **ffmpeg** and make sure `ffmpeg` works in a terminal. [gyan.dev builds](https://www.gyan.dev/ffmpeg/builds/) are fine. If you would rather not put it on PATH, set the full path on the Settings page later (`C:\ffmpeg\bin\ffmpeg.exe` or wherever it landed).
-3. In a terminal, once:
+## What it costs
 
-```bat
-cd C:\Users\dejes\Desktop\vidrot_pipeline
-pip install -r requirements.txt
+Host: **Fly.io**, one always-on machine in Ashburn (`iad`), plus a disk that survives deploys.
+
+Prices below are from Fly's pricing page as of October 2026 ([fly.io/docs/about/pricing](https://fly.io/docs/about/pricing/)):
+
+| Piece | Why | About |
+| --- | --- | --- |
+| `shared-cpu-1x` with 1 GB RAM, running all month | ffmpeg needs more than the 256 MB size | $6.70 |
+| 10 GB volume | SQLite database, clips, reels | $1.50 |
+| Shared IPv4 and HTTPS | Included with the app | $0 |
+| Egress | A phone checking status and playing a few previews | usually under $1 |
+
+**About $8 to $10 a month.** A 256 MB machine is cheaper ($2.19) and too small for 1080×1920 ffmpeg. Do not turn on auto-stop: a stopped machine does not run the scheduler. Veo itself is billed by Google, separate from this.
+
+## Deploy
+
+You do this once, from a terminal with the [flyctl](https://fly.io/docs/flyctl/install/) installed and `fly auth login` already done. This repo does not deploy itself.
+
+```bash
+git clone https://github.com/CRYPTORICH/vidrot-pipeline.git
+cd vidrot-pipeline
+
+# Pick another name if "vidrot" is taken, and put that name in fly.toml.
+fly apps create vidrot
+fly volumes create vidrot_data --region iad --size 10 --app vidrot
+
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+fly secrets set \
+  VIDROT_PASSWORD='a long password you will type on the phone' \
+  VIDROT_SECRET_KEY='the token from the python command' \
+  GEMINI_API_KEY='the Gemini key from aistudio.google.com' \
+  IG_USERNAME='vidrot.ai' \
+  VIDROT_TZ='America/New_York' \
+  --app vidrot
+
+fly deploy --app vidrot
 ```
 
-Use the folder where this repo actually lives. `instagrapi` is only needed when you post. Prompt generation and dry-run previews use the standard library plus ffmpeg.
+`fly deploy` builds the Dockerfile (Python 3.12 and ffmpeg), starts one machine, and mounts the volume at `/data`. HTTPS is the `*.fly.dev` address Fly prints. Open that URL on the phone.
 
-4. Right-click `windows\Start Vidrot.vbs` → **Create shortcut**, and put that shortcut on the desktop. Do not copy the `.vbs` file itself. A copy loses the path back to `console\server.py`.
+Changing `VIDROT_SECRET_KEY` later makes saved secrets unreadable. Set it once and leave it.
 
-## Start and stop
+## Environment variables
 
-Double-click the shortcut. The browser opens `http://127.0.0.1:8765/`. There is no terminal window. Closing the browser does **not** stop the app, which is what lets the scheduler keep running.
+Set these as Fly secrets. None of them belong in git.
 
-To stop it, double-click `windows\Stop Vidrot.vbs`. That sends a shutdown to the local page. It also has no console window.
+| Name | Required | What it is |
+| --- | --- | --- |
+| `VIDROT_PASSWORD` | Yes, on a public URL | The single owner password. |
+| `VIDROT_SECRET_KEY` | Yes, on a public URL | Encrypts the Gemini key, Instagram password, proxy, and session in the database. |
+| `GEMINI_API_KEY` | For real clips | The old `GEMINI_API_KEY` / `GOOGLE_API_KEY`, from [aistudio.google.com/apikey](https://aistudio.google.com/apikey). |
+| `IG_USERNAME` | No | Defaults to `vidrot.ai`. |
+| `IG_PASSWORD` | Only if you do not import a session | Instagram password. The first successful login stores a session. |
+| `IG_PROXY` | No | `http://user:pass@host:port` for a proxy you control. See the Instagram note below. |
+| `VIDROT_TZ` | No | Clock for 09:00 and 12:00. Default in the app is `America/New_York`. |
+| `VIDROT_VAPID_PUBLIC` / `VIDROT_VAPID_PRIVATE` | No | Closed-app alerts. Without them, the status bar in the app is the alert. |
+| `VIDROT_VAPID_SUBJECT` | With the VAPID keys | `mailto:richybeats1@gmail.com` is a fine subject. |
 
-A second double-click of Start, while the app is already running, only opens the browser again.
+Generate VAPID keys with `vapid --gen` after `pip install pywebpush`, then `fly secrets set` the two values. On the phone, Health → Allow alerts.
 
-Dry run is **on** the first time you open it. Leave it on until a batch, a preview reel, and a dry-run "post" all look right. Dry run does not call Google and does not upload.
+The app also reads `PORT` (Fly sets it) and stores data in `VIDROT_DATA` (`/data` in the image).
 
-## First-time setup
+## First login
 
-Open **Settings**. Everything on that page is saved under:
+1. Open `https://<your-app>.fly.dev` on the phone.
+2. Type `VIDROT_PASSWORD`.
+3. Leave **Dry run** on.
+4. Today → New batch. That pulls trends and writes prompts. Render clips makes title cards, not Veo videos. Stitch, then Post. History should say the post was saved and nothing was uploaded.
 
-```
-%LOCALAPPDATA%\vidrot\settings.json
-```
+The status bar under the title stays visible on every page: working, failed, or the phase name. It updates every couple of seconds. A failed job stays on that bar instead of disappearing into a traceback.
 
-That folder is outside the git repo. Do not copy `settings.json` or `session.json` into the repo.
+## Add it to the home screen
 
-### Veo
+The app is a PWA (manifest, icons, service worker).
 
-Clips are generated the way `generate_veo_batch.py` and `generate_more_veo.py` did it, not through the OpenClaw gateway:
+- **iPhone:** Safari → Share → Add to Home Screen. Use Safari. Chrome on iOS will not install it.
+- **Android:** Chrome → menu → Install app, or Add to Home screen.
 
-- `POST https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:predictLongRunning?key=…`
-- body: `instances[0].prompt`, `parameters.aspectRatio = 9:16`, `parameters.durationSeconds` of 4, 6, or 8
-- poll the long-running operation, then download `generatedSamples[0].video.uri`
+Open it from the icon after that. It is a standalone window, still the same login.
 
-The key is the same **Gemini API key** that used to live in `GEMINI_API_KEY` or `GOOGLE_API_KEY`. Create or copy it at [aistudio.google.com](https://aistudio.google.com/apikey) and paste it into Settings. A blank field does not erase a key you already saved.
+## Veo key and Instagram session
 
-**Health → Test Veo key** is the only button that talks to Google for a status check. The health panel itself only looks at whether a key is saved, so refreshing the page does not spend quota.
+If `GEMINI_API_KEY` is set on the host, Health shows the Veo key as saved. You can also paste a key under More → Settings. A blank field does not erase a saved key. Health → Test Veo key is the button that actually talks to Google.
 
-Ralph (OpenClaw) was the agent that *ran* those scripts. The scripts themselves called Google. The console does that call directly. OpenClaw can stay running on `http://127.0.0.1:18790`; Health reports whether that port answers. It is not required to make a clip.
+Instagram, pick one:
 
-The one-off repairs in `check_veo_auth.py` and `fix_veo.py` patched a broken `@google/genai` install inside OpenClaw's `node_modules`. Those are not part of this app.
+1. **Import the session you already have.** On the PC, the old file is `C:\Users\dejes\.openclaw\instagram_sessions\session.json` (or `config\session.json`). Send that file to the phone (AirDrop, a private note, Files). Settings → Import session.json. The server encrypts it and does not keep a plaintext copy.
+2. **Or** type the Instagram password in Settings and use Health → Test Instagram login.
 
-### Instagram
+A checkpoint comes back to the phone. The red notice says what Instagram asked for. Approve the prompt in the Instagram app, or type the code, then tap **I approved it — try again** on the Post page. The server does not hang waiting for a keyboard.
 
-Two ways, in the order the poster tries them:
+### Datacenter IPs
 
-1. Copy an existing session file to `%LOCALAPPDATA%\vidrot\session.json`. The old tools looked in `C:\Users\dejes\.openclaw\instagram_sessions\session.json` and in `config\session.json`.
-2. Or type the Instagram username and password on Settings and use **Health → Test Instagram login** (or just post). The first successful login writes `session.json`. Later posts reuse it and do not send the password again.
+Google's API is used to being called from servers. Instagram is not. A login or upload from a Fly IP is a common reason for a checkpoint, a "we restricted this", or a forced password reset. Importing an old session reduces how often you send the password, and it does not make the IP look like a home connection.
 
-If Instagram wants a checkpoint or a 6-digit code, the Post page says so and has a code field. It does not call `input()`, which is what used to hang a hidden window. Approve the prompt on the phone, or type the current authenticator code, and try the post again.
+Mitigation, if you want it: run a proxy you control (a small machine at home, or a Tailscale exit node) and put its URL in Settings as the Instagram proxy, or set `IG_PROXY`. Traffic to Instagram then leaves from that address. Leave it blank to post directly and deal with the checkpoint on the phone when it happens. This app cannot make a datacenter IP look like a phone.
 
-Health never logs in by itself. It only checks that a session file or a password is present.
+## Schedule
 
-### OpenClaw
+Schedule times are in `VIDROT_TZ` (or the timezone saved in Settings). Morning batch defaults to 09:00 and does trends, render, and brand. Midday post defaults to 12:00 and posts the reel if it is still waiting. Both toggles start off. Days default to Monday–Saturday. Each job runs once per day, in a 10-minute window, and only while the Fly machine is up.
 
-Leave the gateway on port 18790 if you still use Ralph for other work. Point Settings at a different URL only if you moved it. The morning job does not call the gateway.
+Turn them on after a dry run looks right. Then turn Dry run off when you want real Veo clips and a real upload.
 
-## A normal day, by hand
+## What is stored
 
-| Page | What it does |
-| --- | --- |
-| Today | New batch reads Google Trends (RSS, no key) and writes five channels from the same word banks as the desktop `prompt_generator.py`. Render clips, then Stitch and brand. |
-| Prompts | Edit the Veo prompt and the caption, then Save. Regenerate replaces one channel. |
-| Clips | One card per job: waiting, rendering, ready, or the error text. |
-| Reel | Plays the stitched 1080×1920 file. |
-| Post | Caption, optional authenticator code, then Post now. History is the list of what was posted (or dry-run saved). |
-| Schedule | Two toggles and two times. See below. |
-| Health | Veo key, Instagram session, OpenClaw, ffmpeg, free disk, how many clips and reels are on disk, last run. |
-| Logs | The same lines the morning job writes, in `%LOCALAPPDATA%\vidrot\logs\console.log`. |
-
-Branding re-encodes each clip to 1080×1920 before joining. The old `pipeline.py` concat of mismatched files is what used to fail. If you drop a bumper mp4 into `%LOCALAPPDATA%\vidrot\bumpers\`, it is placed first. Otherwise the reel starts on the first clip. The watermark text is `VIDROT` plus the channel name.
-
-A failed Veo submit is retried three times. The error stays on that clip's card. One bad clip does not throw away the ones that succeeded.
-
-## Scheduler (replaces the two tasks)
-
-On **Schedule**:
-
-- **Morning batch** defaults to 09:00. It pulls trends, renders, and brands. It does not post.
-- **Midday post** defaults to 12:00. It posts the reel from the morning job if that reel is still waiting.
-- Days default to Monday–Saturday. Sunday is off, matching the old habit.
-- Each job fires once per day, and only if the app is open within 10 minutes after the chosen time.
-
-Both toggles start **off**. Turn them on after a dry run looks right, then turn Dry run off when you want real Veo clips and a real upload.
-
-The app has to be running. Windows does not start it at logon unless you add the Start shortcut to the Startup folder yourself (`shell:startup`). That shortcut is still windowless.
-
-## Leave the old scheduled tasks
-
-Both tasks were already disabled on 2026-06-17 because they flashed a console ("blue box"). Confirm they stay gone:
-
-1. Open **Task Scheduler**.
-2. Find `\vidrot_pipeline` (daily 09:00, `run_daily.ps1`) and `\vidrot_12pm_post` (one-shot 12:00, `auto_poster.py` pointed at `C:\Users\dejes\.openclaw\media\vidrot_trending_v1.mp4`, which no longer exists).
-3. Disable them if they are enabled, or delete them.
-
-Do not re-enable `run_daily.ps1` or `auto_poster.py`. The console is the replacement. The 12:00 task could not succeed anyway: it posted one hardcoded file that is gone.
-
-## What was dropped
-
-Kept, because it was the working loop: trend text, the channel word banks, the Gemini Veo REST call, ffmpeg branding, instagrapi with a saved session.
-
-Not carried over:
-
-- Money Mitch / Blender experiments
-- `vypr_*` audio experiments
-- `tiktok_upload.py`
-- `check_veo_auth.py` and `fix_veo.py` (node_modules repairs)
-- Buffer, getimg, and Upload-Post keys from the old `.env`
-- The hardcoded 12:00 mp4 path
-
-`pipeline.py` and `post_instagram.py` are still in the repo if you want a terminal batch. The console does not need them.
-
-## Data on disk
+On the volume (`/data`, which is `vidrot_data`):
 
 | Path | Contents |
 | --- | --- |
-| `%LOCALAPPDATA%\vidrot\settings.json` | Key, password, schedule, dry-run flag |
-| `%LOCALAPPDATA%\vidrot\session.json` | Instagram session after a successful login |
-| `%LOCALAPPDATA%\vidrot\clips\` | Per-prompt mp4s |
-| `%LOCALAPPDATA%\vidrot\reels\` | Stitched reels |
-| `%LOCALAPPDATA%\vidrot\posters\` | Preview frames |
-| `%LOCALAPPDATA%\vidrot\history.json` | What was posted |
-| `%LOCALAPPDATA%\vidrot\logs\console.log` | Readable log |
-| `%LOCALAPPDATA%\vidrot\bumpers\` | Optional intro mp4 |
+| `vidrot.db` | Encrypted settings, encrypted Instagram session, login sessions, the current run, history, schedule state |
+| `clips/`, `reels/`, `posters/` | Video and preview frames |
+| `logs/console.log` | The log shown in the app |
+| `bumpers/` | Optional intro mp4, played first |
 
-On Linux or macOS the same tree is `~/.vidrot`, or whatever `VIDROT_DATA` points at.
+A redeploy keeps the volume. Deleting the volume deletes the session and the clips.
 
 ## Tests and dry run
 
-```bat
+```bash
+pip install cryptography
 python -m unittest discover -s tests -v
 ```
 
-The tests mock Veo and Instagram. They do not need a key. Dry run in the app is the same idea with real ffmpeg title cards, so you can watch the whole loop before spending quota.
+The tests mock Veo and Instagram. Dry run in the app is the same idea with real ffmpeg title cards.
+
+## The Windows launcher
+
+`windows/Start Vidrot.vbs` still starts a local server with no console window, for a dry run at the desk. It is not the daily driver. Do not turn the old Task Scheduler jobs back on (`\vidrot_pipeline` and `\vidrot_12pm_post`). They were disabled on 2026-06-17 because they flashed a console, and the noon job posted a file that is gone.
 
 ## GitHub Actions
 
-`.github/workflows/daily-pipeline.yml` runs the unit tests on pull requests and on pushes to `main`. It has no schedule and it does not commit prompts. A hosted runner is the wrong place for the Veo key, ffmpeg bumpers, and the Instagram session.
+`.github/workflows/daily-pipeline.yml` runs the unit tests. It has no schedule. The old cron died because `git add` hit gitignored `prompts/` and `output/`, then GitHub disabled the workflow for inactivity (last real run `32036055230` on 2026-08-17). Leave it disabled.
 
-### Why the old daily job died
+## What only you can do
 
-Every Actions run failed from the first one on 2026-06-17 (`27689212533`) through the last one on 2026-08-17 (`32036055230`). Prompt generation succeeded. The next step, "Commit generated prompts", exited 1.
-
-`prompts/` and `output/` were in `.gitignore`, and the workflow ran `git add` on those paths. Git exits 1 when you add an ignored path. Nothing was committed, so the last real push stayed 2026-06-17.
-
-Two more problems were behind that one. The workflow token was `contents: read`, so a push would have failed next. The push trigger included `config/**` while the job rewrote `config/trending_cache.json`, which would have started another run forever.
-
-On 2026-08-17 GitHub set the workflow to `disabled_inactivity`. Scheduled runs do not count as activity, and this public repo had gone 60 days without a commit. The Instagram step did not cause the failures: it was hardcoded off. The poster also treated `clip_upload`'s Media object like a dict, and it invented a new device id on every launch. Both of those are fixed in `post_instagram.py` for the terminal tool, and the console uses the same session-file approach.
-
-Do not re-enable that cron. The console is the daily driver. Merging this pull request does not turn the old schedule back on, and it should stay off.
-
-## What only the owner can do
-
-1. Install Python 3.11 (with the py launcher) and ffmpeg on the Windows PC, then `pip install -r requirements.txt` in this repo.
-2. Put a **shortcut** to `windows\Start Vidrot.vbs` on the desktop, and optionally in the Startup folder if the scheduler should survive a reboot.
-3. In Task Scheduler, confirm `\vidrot_pipeline` and `\vidrot_12pm_post` are disabled or deleted.
-4. Paste the Gemini API key (the old `GEMINI_API_KEY`, from [aistudio.google.com](https://aistudio.google.com/apikey)) into Settings, then use Health → Test Veo key.
-5. Instagram: copy the old `session.json` into `%LOCALAPPDATA%\vidrot\session.json`, or enter the password once and approve whatever checkpoint the phone shows. This app cannot finish that prompt for you.
-6. Run one dry-run batch and watch the reel. Then turn Dry run off, render one real clip so you know the key still works, and only then turn the two schedule toggles on.
-7. Merge the pull request when the console is the one you want on the machine. The GitHub cron should stay disabled.
+1. `fly auth login`, create the app and the 10 GB volume, set the secrets, and `fly deploy`.
+2. Choose a long `VIDROT_PASSWORD` and a `VIDROT_SECRET_KEY`, and keep the secret key. Rotating it locks you out of saved settings.
+3. Put the Gemini key in Fly secrets or in Settings, then use Health → Test Veo key.
+4. Import `session.json` from the PC, or enter the Instagram password and approve whatever the phone prompts.
+5. Optionally point `IG_PROXY` at a proxy you control if Instagram keeps checkpointing the Fly IP.
+6. Add the page to the home screen from the phone.
+7. Run one dry run, turn Dry run off, then enable the two schedule toggles.
+8. Confirm the old Windows tasks stay disabled.
