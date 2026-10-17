@@ -2,22 +2,50 @@ name: vidrot.ai Daily Pipeline
 
 on:
   schedule:
-    # Runs at 9:00 AM EST (13:00 UTC) Monday-Saturday
+    # 13:00 UTC every Monday–Saturday.
+    # That is 9:00 AM US Eastern during daylight time, and 8:00 AM during standard time.
     - cron: "0 13 * * 1-6"
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "How many channel prompts to generate"
+        required: false
+        default: "5"
+      post_to_instagram:
+        description: "Also try to upload mp4s already in output/. Needs IG secrets. Clips are not generated here."
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [main]
     paths:
-      - "config/**"
+      # Do not include config/trending_cache.json. The job commits that file,
+      # and a config/** filter would schedule another run forever.
+      - "pipeline.py"
       - "prompt_generator.py"
       - "trending.py"
-      - "pipeline.py"
+      - "post_instagram.py"
+      - "paths.py"
+      - "config/channels.json"
+      - "requirements.txt"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/daily-pipeline.yml"
+  pull_request:
+
+# The commit step pushes the batch back to the branch. Without this, the
+# default token is read-only and the push is rejected.
+permissions:
+  contents: write
+
+concurrency:
+  group: vidrot-pipeline-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  generate-prompts:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - uses: actions/checkout@v4
 
@@ -26,26 +54,39 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run Pipeline
-        run: python pipeline.py --cron --count 5
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+  generate-prompts:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run pipeline
+        env:
+          PROMPT_COUNT: ${{ github.event.inputs.count || '5' }}
+        run: python pipeline.py --cron --count "$PROMPT_COUNT"
 
       - name: Commit generated prompts
-        if: github.event_name != 'pull_request'
-        run: |
-          git config user.name "vidrot-bot"
-          git config user.email "bot@vidrot.ai"
-          git add prompts/ output/ config/trending_cache.json
-          git diff --staged --quiet || git commit -m "📺 Daily prompt batch $(date +%Y-%m-%d)"
-          git push
+        run: bash scripts/commit_batch.sh
 
   post-instagram:
     needs: generate-prompts
+    # Off for the schedule on purpose. This repo generates prompts, not video.
+    # A hosted runner has no mp4s, and a password login from a GitHub IP usually
+    # gets an Instagram challenge. Turn this on from the Actions "Run workflow"
+    # button only when output/ already contains clips and the IG secrets exist.
+    if: github.event_name == 'workflow_dispatch' && inputs.post_to_instagram
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Only run if we have credentials and there are clips to post
-    if: false  # Disabled by default — requires IG_PASSWORD GitHub Secret
-    # To enable: change to 'true' and add IG_USERNAME + IG_PASSWORD to GitHub Secrets
-
     steps:
       - uses: actions/checkout@v4
 
@@ -55,16 +96,20 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install instagrapi
+        run: pip install -r requirements.txt
 
       - name: Post to Instagram
         env:
           IG_USERNAME: ${{ secrets.IG_USERNAME }}
           IG_PASSWORD: ${{ secrets.IG_PASSWORD }}
+          IG_SESSION_JSON: ${{ secrets.IG_SESSION_JSON }}
+          IG_SESSIONID: ${{ secrets.IG_SESSIONID }}
+          IG_VERIFICATION_CODE: ${{ secrets.IG_VERIFICATION_CODE }}
         run: |
-          LATEST_CAPTIONS=$(ls output/captions_*.json 2>/dev/null | sort -r | head -1)
-          if [ -n "$LATEST_CAPTIONS" ]; then
-            python post_instagram.py --batch output/ --caption-file "$LATEST_CAPTIONS"
-          else
-            echo "No caption files found — skipping"
+          python post_instagram.py --check
+          latest="$(ls output/captions_*.json 2>/dev/null | sort -r | head -1 || true)"
+          if [ -z "$latest" ]; then
+            echo "No caption file in output/ — nothing to post."
+            exit 0
           fi
+          python post_instagram.py --batch output/ --caption-file "$latest"

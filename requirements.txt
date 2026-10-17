@@ -1,2 +1,4 @@
-instagrapi>=2.0.0
+# Prompt generation (pipeline.py) uses the Python standard library only.
+# instagrapi is required only by post_instagram.py.
+instagrapi>=2.1.2,<4
 requests>=2.31.0

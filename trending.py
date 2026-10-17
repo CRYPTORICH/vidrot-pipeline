@@ -1,87 +1,134 @@
 #!/usr/bin/env python3
 """Trending topics scraper — Google Trends RSS → clean keyword list."""
-import json, re, urllib.request
-from datetime import datetime
-from pathlib import Path
+import json
+import os
+import re
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from html import unescape
 
-BASE = Path(__file__).parent
-CACHE_FILE = BASE / "config" / "trending_cache.json"
+from paths import base_dir
+
+DEFAULT_TRENDS = [
+    "AI REVOLUTION",
+    "DIGITAL DETOX",
+    "CRYPTO MEME COINS",
+    "VIRTUAL REALITY METAVERSE",
+    "CLIMATE TECH",
+    "QUIET QUITTING",
+    "BIOHACKING",
+    "FAST FASHION EXPOSED",
+    "ALGORITHM MANIPULATION",
+    "REMOTE WORK BURNOUT",
+]
 
 
-def scrape_trends(max_results=10):
-    """Fetch current trending topics from Google Trends RSS."""
-    topics = []
+def trends_url():
+    geo = os.environ.get("TRENDS_GEO", "US").strip() or "US"
+    return f"https://trends.google.com/trending/rss?geo={geo}"
+
+
+def cache_path():
+    return base_dir() / "config" / "trending_cache.json"
+
+
+def fetch_rss(url, timeout=15):
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; vidrot-pipeline/1.0)"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
+
+
+def parse_trend_titles(xml_text, max_results=10):
+    """Return trend titles only.
+
+    News headlines live in <ht:news_item_title> and are not trends.
+    A broken feed returns an empty list instead of raising.
+    """
+    titles = []
     try:
-        url = "https://trends.google.com/trending/rss?geo=US"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        resp = urllib.request.urlopen(req, timeout=15)
-        data = resp.read().decode("utf-8")
-        # Extract titles (skip the feed title itself)
-        titles = re.findall(r"<title>(.*?)</title>", data)
-        topics = [t.strip()[:50] for t in titles[1:max_results + 1]]
-        topics = [t for t in topics if len(t) > 3]
-    except Exception as e:
-        print(f"⚠️ Trend scrape failed: {e}")
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        titles = re.findall(r"<title>(.*?)</title>", xml_text)[1:]
+    else:
+        for item in root.iter("item"):
+            title_el = item.find("title")
+            if title_el is not None and title_el.text:
+                titles.append(title_el.text)
 
-    # Cache results
-    cache = {
-        "fetched_at": datetime.now().isoformat(),
+    topics = []
+    for title in titles:
+        cleaned = unescape(str(title)).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned)[:80]
+        if len(cleaned) > 3:
+            topics.append(cleaned)
+        if len(topics) >= max_results:
+            break
+    return topics
+
+
+def _write_cache(topics):
+    path = cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source": "google_trends_rss",
         "trending": topics,
         "count": len(topics),
     }
-    CACHE_FILE.parent.mkdir(exist_ok=True)
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f, indent=2)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
 
+
+def scrape_trends(max_results=10, write_cache=True):
+    """Fetch current trending topics. Returns [] on failure and does not wipe the cache."""
+    try:
+        xml_text = fetch_rss(trends_url())
+        topics = parse_trend_titles(xml_text, max_results=max_results)
+    except Exception as exc:
+        print(f"⚠️ Trend scrape failed: {exc}")
+        return []
+
+    if topics and write_cache:
+        _write_cache(topics)
+    elif not topics:
+        print("⚠️ Trend scrape returned no titles; keeping the previous cache")
     return topics
 
 
 def get_cached_trends():
-    """Get cached trends if available, otherwise return defaults."""
-    if CACHE_FILE.exists():
-        with open(CACHE_FILE) as f:
-            data = json.load(f)
-            topics = data.get("trending", [])
+    """Last good cache, or the built-in defaults when the cache is missing or empty."""
+    path = cache_path()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"⚠️ Trend cache unreadable: {exc}")
+        else:
+            topics = data.get("trending") or []
             if topics:
                 return topics
-    # Fallback defaults
-    return [
-        "AI REVOLUTION",
-        "DIGITAL DETOX",
-        "CRYPTO MEME COINS",
-        "VIRTUAL REALITY METAVERSE",
-        "CLIMATE TECH",
-        "QUIET QUITTING",
-        "BIOHACKING",
-        "FAST FASHION EXPOSED",
-        "ALGORITHM MANIPULATION",
-        "REMOTE WORK BURNOUT",
-    ]
+    return list(DEFAULT_TRENDS)
 
 
-def get_trends(force_fresh=False):
-    """Get trends — try fresh first, fall back to cache, then defaults."""
-    if force_fresh:
-        topics = scrape_trends()
-        if topics:
-            return topics
+def get_trends(force_fresh=False, write_cache=True):
+    """Live trends, then the last good cache, then built-in defaults.
 
-    topics = get_cached_trends()
-    if not force_fresh:
-        # Try live, but don't block on it
-        try:
-            fresh = scrape_trends()
-            if fresh:
-                return fresh
-        except:
-            pass
-
-    return topics if topics else get_cached_trends()
+    force_fresh is accepted so older callers keep working. A failed live
+    fetch always falls back; it never erases a good cache. write_cache=False
+    is for a dry run that must not touch the checkout.
+    """
+    del force_fresh  # live fetch is always attempted; failure falls back
+    topics = scrape_trends(write_cache=write_cache)
+    if topics:
+        return topics
+    return get_cached_trends()
 
 
 if __name__ == "__main__":
     topics = get_trends(force_fresh=True)
     print(f"✅ {len(topics)} trending topics:")
-    for t in topics:
-        print(f"  • {t}")
+    for topic in topics:
+        print(f"  • {topic}")

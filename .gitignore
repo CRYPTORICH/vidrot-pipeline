@@ -1,4 +1,20 @@
-prompts/
-output/
+# Secrets. Session JSON is a live Instagram login — never commit it.
 .env
+config/session.json
+*.session.json
+
+# Python
 __pycache__/
+*.pyc
+.pytest_cache/
+
+# Rendered clips stay on the machine that generated them.
+# Caption JSON and generate_instructions.txt in output/ are committed.
+output/*.mp4
+output/*.mov
+output/*.webm
+output/*.mkv
+output/*.jpg
+output/*.jpeg
+output/*.png
+output/*.webp
